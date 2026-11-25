@@ -1,0 +1,30 @@
+# Secrets & local config (never commit real .env)
+.env
+.env.*
+!.env.example
+
+# Python / uv / test caches
+__pycache__/
+*.py[cod]
+*$py.class
+.venv/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+dist/
+build/
+*.egg-info/
+
+# Local runtime state & media outputs
+.state/
+.tasks/
+ledger/
+*.mp4
+*.mov
+*.mkv
+*.wav
+*.mp3
+
+# OS files
+.DS_Store
+Thumbs.db
