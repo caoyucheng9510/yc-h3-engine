@@ -140,56 +140,25 @@ yc-h3 preflight --provider chenyu --workflow my-chenyu-wf --task t2v \
 远端 `registry.py` 会**自动扫描** `yc_h3/remote/workflows/minimax_h3/*/manifest.json`（包目录名使用下划线，如 `my_custom_wf/` 对应逻辑名 `my-custom-wf`），但 CLI 与本地路由仍需在 `spec.py` 登记逻辑名。
 
 1. **创建包目录 `yc_h3/remote/workflows/minimax_h3/my_custom_wf/`**：
-   - `manifest.json`（`verification` 必须是按卡型映射的字典；每条 `weights` 必须包含唯一 `id` 以及默认配方引用的权重别名，如 `hybrid_b25_49`、`heretic`、`video_vae_int8`、`audio_vae_fp32` 等）：
-     ```json
-     {
-       "id": "my-custom-wf",
-       "steps": 12,
-       "required_nodes": ["UNETLoader", "CLIPLoader", "VAELoader", "MiniMaxH3ReferenceToVideo", "CreateVideo", "SaveVideo"],
-       "plugins": ["ComfyUI-KJNodes", "comfyui-SelfLift"],
-       "plugin_nodes": {
-         "ComfyUI-KJNodes": "MiniMaxChunkFeedForward",
-         "comfyui-SelfLift": "SelfLiftH3Sampler"
-       },
-       "profile_id": "comfy-main",
-       "comfyui_revision": "c59e67bd5a2757ddba1c6c6a993c0b6c811b54da",
-       "output_kind": "video",
-       "tasks": ["t2v", "i2v", "r2v"],
-       "verification": {
-         "G4-96": "unverified",
-         "H100-80": "unverified",
-         "A100-80": "unverified",
-         "A100-40": "unverified",
-         "L4-24": "unverified",
-         "T4-16": "unverified"
-       },
-       "weights": [
-         {
-           "id": "hybrid_b25_49",
-           "repo": "smhfacct/Minimax-H3-fl2va-ref2va-hybrid-models",
-           "revision": "6328c7dc34369783dd6a224b366aeb698e552e19",
-           "repo_path": "minimax_h3_hybrid_fl2va_ref2va_b25-49-int8.safetensors",
-           "comfy_rel_path": "diffusion_models/minimax_h3_hybrid_fl2va_ref2va_b25-49-int8.safetensors",
-           "size_bytes": 20970379632,
-           "sha256": "a629cfea8d89a071b140c6e1935dc9a23e72de6badc18975a2bb9e6d1423d76d"
-         }
-       ]
-     }
-     ```
-   - `builder.py`（必须实现远端 `registry.py` 实际调用的 **`build(params, profile, prefix)`** 签名，可参考 `jinyu_hybrid/builder.py`）：
+   - **`manifest.json`**：直接复制完整的内置 `yc_h3/remote/workflows/minimax_h3/jinyu_hybrid/manifest.json`（保留默认配方必需的完整权重清单与 `id` 别名：`hybrid_b25_49`、`heretic`、`text_enc_nvfp4`、`video_vae_int8`、`audio_vae_fp32`、`lora_dmad`、`lora_mystic_v1`、`selflift_lms` 等），再按需修改以下字段：
+     - 将 `"id"` 改为 `"my-custom-wf"`；
+     - 将 `"verification"` 字典中全部卡型值重置为 `"unverified"`（必须保持按卡型映射的 JSON 对象，不可改为单个字符串）；
+     - 如新增自定义 LoRA 或替换权重，在 `"weights"` 数组中添加含唯一 `"id"`、`repo`、`revision`、`repo_path`、`comfy_rel_path`、`size_bytes`、`sha256` 的完整条目。
+   - **`builder.py`**（必须实现远端 `registry.py` 调用的 `build(params, profile, job_id)`，可复用 `jinyu_hybrid/builder.py` 的 `build_jinyu`）：
      ```python
-     from ..registry import build_jinyu_graph
+     from ..jinyu_hybrid.builder import build_jinyu
 
-     def build(params, profile, prefix):
-         return build_jinyu_graph(params, profile, prefix, combat=False)
+
+     def build(params, profile, job_id):
+         return build_jinyu("my-custom-wf", params, profile, job_id, combat=False)
      ```
 2. **同步本地逻辑名与打包规则**：
    - 将 `"my-custom-wf"` 加入 `yc_h3/remote/workflows/minimax_h3/spec.py` 的 `JINYU_WORKFLOWS`（**跨平台红线**：`spec.py` 保持纯 Python、零 `fcntl` 导入，确保原生 Windows 可正常浏览工作流与跑 `chenyu-comfy`）；
    - 核对 `pyproject.toml` 确保新目录的 `manifest.json` 已覆盖在包数据匹配规则内。
-3. **安装开发依赖并验证实际构图与全量回归**：
+3. **安装开发依赖并验证规范化、实际构图与全量回归**：
    ```bash
    uv sync --extra dev
    uv run pytest
-   uv run python -c "from yc_h3.remote.workflows.minimax_h3 import registry, spec; wf = registry.get_workflow('my-custom-wf'); g = wf.build({'workflow':'my-custom-wf','task':'t2v','prompt':'test','seconds':5}, spec.resolve_hardware_profile(96, 176, 'G4'), 'smoke'); print('nodes:', len(g))"
-   yc-h3 workflows --provider chenyu-comfy --json
+   uv run python -c "from yc_h3.remote.workflows.minimax_h3 import registry, spec; wf = registry.get_workflow('my-custom-wf'); profile = spec.resolve_hardware_profile(96, 176, 'G4'); norm = wf.normalize('t2v', {'workflow':'my-custom-wf','prompt':'test','seconds':5}, profile); graph, output_id = wf.build(norm, profile, 'smoke'); assert graph[output_id]['class_type'] == 'SaveVideo'; print('nodes:', len(graph), 'output:', output_id)"
+   uv run yc-h3 workflows --provider chenyu-comfy --json
    ```

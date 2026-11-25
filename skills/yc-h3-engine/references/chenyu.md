@@ -35,7 +35,7 @@ yc-h3 gen --provider chenyu --workflow jinyu-hybrid \
 - **生命周期与计费护栏**：
   - 建机前冻结绝对截止时间，建机回执丢失时在当前命令内自动认领并挂平台定时停机与空闲销毁护栏；若进程在挂护栏前被强杀/断电，务必运行 `yc-h3 gpu reconcile --backend chenyu` 或登录晨羽网页端核查。
   - 权重默认缓存在持久盘 `/usrdata/yc_h3_engine/models`。
-  - **存镜像两步审批与防丢片**：首次不带摘要执行 `gpu save-image` 返回退出码 `2` 并附带存镜像计划（摘要在错误 JSON 的 `preflight.approve_digest`）；执行时会在生命周期锁内核对远端作业列表与本地多版本交付证明，若存在未取回成片直接阻断并给出 `yc-h3 jobs fetch <task_key> --remote-job-id <id>` 领取命令。
+  - **存镜像两步审批与防丢片**：存在可保存的受管运行实例且计划生成成功时，首次不带摘要执行 `gpu save-image` 返回退出码 `2` 并向 stderr 输出错误 JSON（摘要在 `preflight.approve_digest`；若实例已停或有待核对状态会先阻断退出）；执行时会在生命周期锁内核对远端作业列表与本地多版本交付证明，若存在未取回成片直接阻断并给出 `yc-h3 jobs fetch <task_key> --remote-job-id <id>` 领取命令。
 
 ```bash
 # 1) 规划并经批准开机（从 gpu plan 返回的 digest 字段取得摘要；--setup 默认装齐金鱼插件）

@@ -140,7 +140,7 @@ yc-h3 gen --provider runninghub --workflow jinyu-hybrid \
 ### 审批摘要字段来源速查
 - **`yc-h3 preflight --json`**：读取顶层 `approve_digest`，传给 `yc-h3 gen --approve-digest`；
 - **`yc-h3 gpu plan --json`**（Colab / 晨羽开机或改时限）：读取顶层 `digest`，传给 `yc-h3 gpu up --approve-digest`；
-- **`yc-h3 gpu save-image --backend chenyu --json`**（首次不带摘要返回退出码 `2`）：读取错误 JSON 中的 `preflight.approve_digest`，获批后原样追加 `--approve-digest` 执行。
+- **`yc-h3 gpu save-image --backend chenyu --json`**（当存在可保存的受管运行实例且成功生成计划时，首次不带摘要返回退出码 `2` 并向 stderr 输出错误 JSON；实例已停或有待核对状态会先阻断退出）：读取错误 JSON 中的 `preflight.approve_digest`，获批后原样追加 `--approve-digest` 执行。
 
 ### 常用维护命令速查
 ```bash
@@ -168,9 +168,9 @@ yc-h3 ledger summary --tag demo --json      # 按分组统计已入账费用汇�
 
 | 通道 / 机型 | 样本规格与样本量 | 计时口径与实测耗时 | 原始计费单位 / 公开费率参考 | 适用判断 |
 | :--- | :--- | :--- | :--- | :--- |
-| **RunningHub Plus 48GB** | `jinyu-hybrid` `1664×928` 12 步：5s 纯图 1 单、5s 图音 2 单、11s 图音 2 单 | `wall_total_s`（首次提交至交付）：5s 中位数 `135–151s`；11s 中位数 `490s` | 代码采用单样本校准（`37s/输出秒 × 0.23 积分/运行秒`），最终以接口回报 `chargedPoint` 为准 | 零 GPU 运维，适合日常主力出片 |
+| **RunningHub Plus 48GB** | `jinyu-hybrid` `1664×928` 12 步（2026-11-24 5s/11s 样本子集，共 5 单：5s 纯图 1 单、5s 图音 2 单、11s 图音 2 单） | `wall_total_s`（首次提交至交付）：5s 纯图 `134.9s`、5s 图音两单中位数 `151.0s`；11s 图音两单中位数 `490.0s` | 代码采用单样本校准（`37s/输出秒 × 0.23 积分/运行秒`），最终以接口回报 `chargedPoint` 为准 | 零 GPU 运维，适合日常主力出片 |
 | **晨羽按次 API（5090）** | `jinyu-hybrid` 1.5 MP（5s/7s/11s，4 单，无参考视频） | 纯推理 `2.15–4.81 min`；含平台内容审查总墙钟 `37–44 min` | 按公开双钱包费率 `0.12 CNY/推理分钟 + 0.03 CNY/次` 折算约 `¥0.29–¥0.61/单`（排队不扣算力费） | 适合不赶时间的低成本零星补镜 |
-| **晨羽独占 GPU（`chenyu-comfy`）** | 按会话小时计费（当前尚无与其他通道对齐的单镜样本） | 以 `gpu plan` 实时展示的卡型小时费率为准 | 按独占会话运行时长核销晨羽 CNY 双钱包 | 适合 Windows 连续批跑或参考视频复用权重 |
+| **晨羽独占 GPU（`chenyu-comfy`）** | 按会话计费（当前尚无与其他通道对齐的单镜样本） | `gpu plan` 展示平台小时费率（API 未提供时标注参考费率） | 停机核销优先读取实例账单合计双钱包实扣，缺账单时按运行时长与小时费率估算 | 适合 Windows 连续批跑或参考视频复用权重 |
 | **Colab `A100-80`** | `jinyu-hybrid` / `jinyu-combat` `1664×928` 12 步（7 单，含冷/暖跑） | 5.2s 4 图冷跑：权重准备 `1129.7s` + 纯推理 `250.6s`；11.5s 5 图 2 音暖跑纯推理 `607.8s` | 实测 `10.99 CU/hr`（纯推理折算见明细表，不含冷启动下载） | 已有 CU 额度内适合批跑纯图/图音镜头 |
 | **Colab `G4-96` (Blackwell)** | 历史旧配方 `1344×768` 非 SelfLift 12 步（4 单暖跑） | 纯图 10s 纯推理 `151.5–179.1s`；带 10s 视频参考纯推理 `807.2s`（暖跑总耗时 `808.9s`） | 实测 `10.05 CU/hr`（纯图约 `0.43–0.50 CU`，视频参考约 `2.26 CU`） | 历史旧配方基线，现行 `1664×928` SelfLift 新配方待实测 |
 
