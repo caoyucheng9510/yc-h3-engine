@@ -2,6 +2,7 @@ import json
 import os
 import socket
 import sys
+import threading
 import time
 import urllib.request
 from pathlib import Path
@@ -11,7 +12,7 @@ import pytest
 
 from yc_h3.config import credential_fingerprint, load_config
 from yc_h3.local import colab, daemon, platform_guard
-from yc_h3.local.app import App
+from yc_h3.local.app import App, ApprovalRequiredError
 from yc_h3.local.config import Settings
 from yc_h3.local.tunnel import Tunnel
 from yc_h3.providers.base import ProviderError
@@ -142,7 +143,7 @@ class FakeColab:
         pass
 
 
-@pytest.mark.parametrize("mode", ["manual", "idle", "deadline", "daemon", "restarted-placeholder"])
+@pytest.mark.parametrize("mode", ["manual", "idle", "deadline", "daemon", "restarted-placeholder", "reconcile"])
 @colab_runtime
 def test_every_colab_stop_path_records_session_and_balance(tmp_path, mode):
     engine = load_config(data_dir=tmp_path / "engine", cwd=tmp_path, environ={"COLAB_ACCOUNT": "fixture-profile"})
@@ -165,6 +166,10 @@ def test_every_colab_stop_path_records_session_and_balance(tmp_path, mode):
     })
     if mode == "manual":
         task = app.session_stop(name)
+    elif mode == "reconcile":
+        fake.rows.clear()
+        assert app.reconcile_session(name)["action"] == "cleared"
+        task = None
     elif mode == "daemon":
         assert app.prepare_daemon_stop()["exit_code"] == 3
         assert app.prepare_daemon_stop(stop_colab=True)["stopped_sessions"] == [name]
@@ -185,13 +190,65 @@ def test_every_colab_stop_path_records_session_and_balance(tmp_path, mode):
     app._watchdog_check(now=now)
     assert not settings.get("managed_sessions")
     assert not settings.get("pending_stop_billing")
-    assert fake.stop_calls == [("stop", "-s", name)]
+    assert fake.stop_calls == ([] if mode == "reconcile" else [("stop", "-s", name)])
     usage = [json.loads(line) for line in (engine.data_dir / "ledger/usage.jsonl").read_text().splitlines()]
-    assert len(usage) == 1 and usage[0]["quantity"] == 2
+    assert len(usage) == 1
+    if mode == "reconcile":
+        assert usage[0]["estimated"] and usage[0]["quantity"] > 0
+    else:
+        assert usage[0]["quantity"] == 2
     assert usage[0]["provider"] == "colab-comfy"
     assert usage[0]["account_fp"] == credential_fingerprint("fixture-profile")
     balances = (engine.data_dir / "ledger/balances.tsv").read_text().splitlines()
     assert len(balances) == 2 and "\t18" in balances[1]
+
+
+@colab_runtime
+def test_reconcile_clears_colab_placeholder_after_unallocated_start(tmp_path, monkeypatch):
+    engine = load_config(data_dir=tmp_path / "engine", cwd=tmp_path, environ={"COLAB_ACCOUNT": "fixture-profile"})
+    settings = Settings(engine_config=engine)
+    fake = FakeColab(settings)
+    fake.rows.clear()
+    app = App(settings=settings, colab=fake, tunnel=Tunnel(fake))
+    name = "yh3-offline"
+    entered, release = threading.Event(), threading.Event()
+
+    def fail_to_allocate(args, task, timeout):
+        assert args[:3] == ["new", "-s", name]
+        entered.set()
+        assert release.wait(5)
+        return 124, "synthetic timeout"
+
+    monkeypatch.setattr(fake, "stream", fail_to_allocate)
+    options = {"session": name, "gpu": "G4"}
+    plan = app.gpu_plan(**options)
+    task = app.gpu_up(**options, approve_digest=plan["digest"], connect=False)
+    try:
+        assert entered.wait(5)
+        with pytest.raises(ApprovalRequiredError) as error:
+            app.reconcile_session(name)
+        assert error.value.exit_code == 3
+        assert error.value.payload["code"] == "session_task_running"
+    finally:
+        release.set()
+    for _ in range(200):
+        if task.finished:
+            break
+        time.sleep(0.01)
+    assert task.status == "error" and "needs_reconcile" in task.error
+    placeholder = settings.get("managed_sessions")[name]
+    assert placeholder["host"] is None
+    assert app.gpu_plan(**options)["code"] == "needs_reconcile"
+
+    fake.rows.append({"name": "yh3-unbound", "host": "fixture-other", "hardware": "G4"})
+    assert app.reconcile_session(name)["code"] == "unexpected_managed_sessions"
+    assert settings.get("managed_sessions")[name] == placeholder
+    fake.rows.clear()
+    result = app.reconcile_session(name)
+    assert (result["status"], result["action"], result["session_name"]) == ("ok", "cleared", name)
+    assert not settings.get("managed_sessions") and not settings.get("pending_stop_billing")
+    assert app.gpu_plan(**options)["action"] == "allocate"
+    assert not (engine.data_dir / "ledger/usage.jsonl").exists()
 
 
 @colab_runtime

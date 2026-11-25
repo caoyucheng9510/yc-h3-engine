@@ -4,6 +4,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import re
 import tempfile
 from collections.abc import Iterator
 from pathlib import Path
@@ -57,6 +58,14 @@ def remote_root() -> str:
     if Path.home() == Path("/root"):
         return "/root/yc_h3_engine"
     return str(Path.home() / ".yc-h3-engine" / "remote")
+
+
+def remote_job_paths(root: str | Path) -> tuple[str, Path, Path]:
+    instance_id = os.environ.get("YC_H3_PLATFORM_INSTANCE_ID") or ""
+    if instance_id and not re.fullmatch(r"[A-Za-z0-9_-]{1,128}", instance_id):
+        raise ValueError("远端平台实例标识无效")
+    root = Path(root)
+    return instance_id, root / "outputs" / instance_id, root / "jobs" / instance_id
 
 
 # The deployable archive is standalone. Keep its source digest aligned with remote_bundle.py.

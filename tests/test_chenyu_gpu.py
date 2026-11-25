@@ -147,7 +147,8 @@ assert not any(name.startswith(('yc_h3.local', 'yc_h3.remote.setup_env')) for na
     assert calls == [(1, 1), (2, 1)]
 
 
-def test_create_reply_loss_recovers_with_original_deadline_in_same_command(managed, monkeypatch):
+@pytest.mark.parametrize("platform_clock_lag", [0, 2])
+def test_create_reply_loss_recovers_with_original_deadline_in_same_command(managed, monkeypatch, platform_clock_lag):
     _, manager, platform = managed
     now = [1000.5]
     monkeypatch.setattr(chenyu_gpu, "time", SimpleNamespace(time=lambda: now[0]))
@@ -155,6 +156,7 @@ def test_create_reply_loss_recovers_with_original_deadline_in_same_command(manag
     def lose_reply():
         now[0] += 22
         platform.skip_lookup = 2
+        platform.created["create_time"] -= platform_clock_lag
 
     platform.create_failure = lose_reply
     options = {"gpu": "6000D-84G", "max_runtime_minutes": 1, "idle_minutes": 0}
@@ -325,7 +327,8 @@ def test_chenyu_instance_endpoint_accepts_platform_routing_suffix_and_rejects_fo
         chenyu_gpu.validate_instance_endpoint("https://fixture-id89.zone.chenyu.cn.example.com", "fixture-id")
 
 
-def test_unresolved_create_keeps_placeholder_and_blocks_duplicate_submission(managed):
+@pytest.mark.parametrize("observation", ["list_error", "unmatched_instance"])
+def test_unresolved_create_keeps_placeholder_and_blocks_duplicate_submission(managed, monkeypatch, observation):
     _, manager, platform = managed
 
     def lose_reply():
@@ -344,3 +347,87 @@ def test_unresolved_create_keeps_placeholder_and_blocks_duplicate_submission(man
         manager.gpu_up(**options, approve_digest=plan["digest"], connect=False)
     assert error.value.exit_code == 3
     assert [route for route, _ in platform.calls].count("/instance/create_by_image") == 1
+
+    observed = iter([False, True, False, False])
+
+    def instances():
+        if not next(observed):
+            return []
+        if observation == "list_error":
+            raise ProviderError("synthetic lookup timeout", code="platform_transport_error")
+        return [{"instance_uuid": "vm-new-unmatched", "status": 2}]
+
+    monkeypatch.setattr(platform, "instances", instances)
+    with pytest.raises(ProviderError) as error:
+        manager.gpu_reconcile(clear_missing=True)
+    assert error.value.code == "needs_reconcile"
+    assert manager.state.read() == placement
+
+
+@pytest.mark.parametrize("runtime, reconcile_at, clear_missing", [
+    pytest.param(2, 1061, False, id="after-propagation-grace"),
+    pytest.param(1, 1060, False, id="at-deadline"),
+    pytest.param(2, 1001, True, id="explicit-clear"),
+])
+def test_reconcile_clears_unallocated_gpu_after_confirmed_absence(
+    managed, monkeypatch, runtime, reconcile_at, clear_missing,
+):
+    engine, manager, platform = managed
+    now = [1000.5]
+    monkeypatch.setattr(chenyu_gpu, "time", SimpleNamespace(time=lambda: now[0]))
+
+    def fail_to_allocate():
+        platform.created = None
+
+    platform.create_failure = fail_to_allocate
+    options = {"max_runtime_minutes": runtime}
+    plan = manager.gpu_plan(**options)
+    with pytest.raises(ProviderError) as error:
+        manager.gpu_up(**options, approve_digest=plan["digest"], connect=False)
+    assert error.value.code == "needs_reconcile"
+    placement = manager.state.read()
+    assert placement["allocation_pending"] and placement["known_instance_ids"] == []
+    with pytest.raises(ProviderError) as error:
+        manager.gpu_reconcile()
+    assert error.value.code == "needs_reconcile"
+    assert manager.state.read() == placement
+
+    now[0] = reconcile_at
+    before = platform.list_attempts
+    assert manager.gpu_reconcile(clear_missing=clear_missing) == {"status": "cleared", "session_name": "yh3-h3"}
+    assert platform.list_attempts - before == 4
+    assert manager.state.read() == {}
+    assert manager.gpu_plan(**options)["action"] == "allocate"
+    assert not (engine.data_dir / "ledger/usage.jsonl").exists()
+
+
+def test_chenyu_warn_submission_accepts_matching_approve_digest_without_ack(managed, monkeypatch):
+    _, manager, platform = managed
+    monkeypatch.setattr(chenyu_gpu, "time", SimpleNamespace(time=lambda: 1000))
+    record = {
+        "status": 2, "guards_ready": True, "deadline_at": 1060, "hourly_cny": 3,
+        "endpoint": f"https://{platform.instance_id}.zone.chenyu.cn", "endpoint_origin": platform.origin,
+        "credential_fingerprint": platform.fingerprint, "runtime_auth_token": "synthetic-" + "x" * 32,
+    }
+    client = manager._client(record)
+    context = {"billing_rate": 3}
+    remote_digest = "a" * 64
+    digest = client._submission_digest(remote_digest, context, record["deadline_at"])
+    facts = {"status": "warn", "preflight_digest": digest, "remote_preflight_digest": remote_digest,
+             "billing_context": context}
+    monkeypatch.setattr(client, "_prepare", lambda _: (200, facts, []))
+    submitted = []
+
+    def submit(method, route, *, payload, timeout):
+        submitted.append((method, route, payload))
+        return 200, {"job_id": "fixture-job"}
+
+    monkeypatch.setattr(client, "_request_json", submit)
+    request = {"task": "t2v", "params": {"prompt": "Offline submission"}}
+    for approval in ({}, {"approve_digest": "b" * 64}, {"preflight_digest": digest}):
+        assert client.submit_job({**request, **approval})[0] == 409
+    assert not submitted
+    assert client.submit_job({**request, "approve_digest": digest}) == (200, {"job_id": "fixture-job"})
+    method, route, payload = submitted[0]
+    assert (method, route) == ("POST", "/api/jobs")
+    assert payload["preflight_digest"] == remote_digest and payload["ack_warnings"] is True

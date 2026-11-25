@@ -31,7 +31,8 @@ else:
     from workflows import registry as workflows
 
 registry = workflows.h3
-ROOT = Path(os.environ.get("YC_H3_REMOTE_ROOT", "/content/yc_h3_engine"))
+ROOT = Path(_util.remote_root())
+_, OUTPUTS, JOBS_DIR = _util.remote_job_paths(ROOT)
 INPUTS = ROOT / "inputs"
 COMFY_OUTPUTS = ROOT / "comfy_outputs"
 WORKER_PGIDS = ROOT / "run" / "worker_pgids"
@@ -69,7 +70,7 @@ def _remove_pgid_file(pid: int) -> None:
 def check_cancelled(job_id):
     if job_id:
         try:
-            job = json.loads((ROOT / "jobs" / job_id / "job.json").read_text())
+            job = json.loads((JOBS_DIR / job_id / "job.json").read_text(encoding="utf-8"))
         except (OSError, ValueError):
             return
         if job.get("status") == "cancelled" or job.get("cancel_requested") is True:
@@ -529,10 +530,10 @@ def run_job(comfy, command, profile):
         if missing:
             raise RuntimeError("工作流节点不可用：" + ", ".join(sorted(missing)))
         cancel()
-        directory = (ROOT / "outputs" / job_id).resolve()
+        directory = (OUTPUTS / job_id).resolve()
         if not warmup and (
             directory != Path(command["out_dir"]).resolve()
-            or (ROOT / "outputs").resolve() not in directory.parents
+            or OUTPUTS.resolve() not in directory.parents
         ):
             raise ValueError("ComfyUI 输出目录无效")
         client_id, prompt_id = str(uuid.uuid4()), str(uuid.uuid4())

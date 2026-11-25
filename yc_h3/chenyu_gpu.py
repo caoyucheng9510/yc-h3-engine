@@ -60,6 +60,7 @@ DEFAULT_GPU_FALLBACK = ("6000D-84G", "nGPU-48GB", "5090")
 DEFAULT_SETUP_PLUGINS = ("ComfyUI-KJNodes", "comfyui-SelfLift")
 STOPPED_STATUSES = (22, 23)
 INACTIVE_STATUSES = (4, *STOPPED_STATUSES)
+_ALLOCATION_PROPAGATION_SECONDS = 60
 _API = "/api/open/v2"
 _ID = re.compile(r"[A-Za-z0-9_-]{1,128}")
 _VISIBLE_ASCII = re.compile(r"[!-~]{32,}")
@@ -580,22 +581,30 @@ class ChenyuGpuManager:
                     and (not _SESSION_NAME.fullmatch(_name(row)) or _name(row) == record["session_name"])
                     and row.get("gpu_uuid") == expected_gpu
                     and row.get(source_key) == record["source_id"]
-                    and created is not None and int(record["allocated_at"]) <= created <= int(time.time()) + 5):
+                    and created is not None and int(record["allocated_at"]) - 60 <= created <= int(time.time()) + 60):
                 matches.append(row)
         if len(matches) > 1:
             raise _error("晨羽发现多个可能的分配结果，请人工核对", "ambiguous_allocation")
         return matches[0] if matches else None
 
-    def _recover_allocation(self, api, record, *, attempts):
+    def _recover_allocation(self, api, record, *, attempts, clear_missing_after=None):
+        known = set(record.get("known_instance_ids", ()))
+        confirmed_missing = (clear_missing_after is not None and "known_instance_ids" in record
+                             and not record.get("instance_uuid"))
         for index in range(attempts):
             try:
                 rows = api.instances()
             except ProviderError:
-                rows = []
-            if row := self._allocation_match(record, rows):
-                return row["instance_uuid"]
+                confirmed_missing = False
+            else:
+                if row := self._allocation_match(record, rows):
+                    return row["instance_uuid"]
+                if confirmed_missing and any(row["instance_uuid"] not in known for row in rows):
+                    confirmed_missing = False
             if index + 1 < attempts:
                 self.sleep(2)
+        if confirmed_missing and time.time() >= clear_missing_after:
+            return None
         raise _error(
             "晨羽暂未确认分配结果，已保留占位。请执行 yc-h3 gpu reconcile --backend chenyu",
             "needs_reconcile",
@@ -831,14 +840,20 @@ class ChenyuGpuManager:
         state["platform_status"] = _status(current) if current is not None else None
         return state
 
-    def gpu_reconcile(self, session=None):
+    def gpu_reconcile(self, session=None, *, clear_missing=False):
         api = self._platform()
         with self.state.lock():
             record = self._owned(api, session)
             if not record:
                 return {"status": "absent"}
             if record.get("allocation_pending"):
-                instance_uuid = self._recover_allocation(api, record, attempts=4)
+                clear_missing_after = -math.inf if clear_missing else min(
+                    record["allocated_at"] + _ALLOCATION_PROPAGATION_SECONDS, record["deadline_at"],
+                )
+                instance_uuid = self._recover_allocation(api, record, attempts=4, clear_missing_after=clear_missing_after)
+                if instance_uuid is None:
+                    self.state.write({})
+                    return {"status": "cleared", "session_name": record["session_name"]}
                 self._bind_allocation(record, instance_uuid)
             rows = api.instances()
             row = next((row for row in rows if row["instance_uuid"] == record.get("instance_uuid")), None)
@@ -1554,7 +1569,8 @@ class ChenyuRemoteClient(ManagedComfyClient):
         live_context = dict(facts["billing_context"], billing_rate=record["hourly_cny"])
         expected = self._submission_digest(facts["remote_preflight_digest"], live_context, record["deadline_at"])
         digest = body.get("approve_digest") or body.get("preflight_digest")
-        if digest != expected or expected != facts["preflight_digest"] or (facts["status"] == "warn" and body.get("ack_warnings") is not True):
+        acknowledged = body.get("approve_digest") == expected or body.get("ack_warnings") is True
+        if digest != expected or expected != facts["preflight_digest"] or (facts["status"] == "warn" and not acknowledged):
             return 409, dict(facts, status="warn", approval_status="stale" if digest else "missing")
         if blocked := self._deadline_check(record):
             return 409, blocked

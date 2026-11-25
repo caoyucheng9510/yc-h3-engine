@@ -142,12 +142,8 @@ ROOT = _util.remote_root()
 os.environ.setdefault("YC_H3_REMOTE_ROOT", ROOT)
 APP_DIR = os.path.dirname(os.path.abspath(__file__))
 INPUTS = f"{ROOT}/inputs"
-PLATFORM_INSTANCE_ID = os.environ.get("YC_H3_PLATFORM_INSTANCE_ID") or ""
-if PLATFORM_INSTANCE_ID and not re.fullmatch(r"[A-Za-z0-9_-]{1,128}", PLATFORM_INSTANCE_ID):
-    raise ValueError("远端平台实例标识无效")
-_namespace = f"/{PLATFORM_INSTANCE_ID}" if PLATFORM_INSTANCE_ID else ""
-OUTPUTS = f"{ROOT}/outputs{_namespace}"
-JOBS_DIR = f"{ROOT}/jobs{_namespace}"
+PLATFORM_INSTANCE_ID, _outputs, _jobs_dir = _util.remote_job_paths(ROOT)
+OUTPUTS, JOBS_DIR = str(_outputs), str(_jobs_dir)
 RUN_DIR = Path(ROOT) / "run"
 SERVER_PID_FILE = RUN_DIR / "server.pid"
 WORKER_PGIDS = RUN_DIR / "worker_pgids"

@@ -106,6 +106,15 @@ def load_workflows(root=WORKFLOW_ROOT):
             raise ValueError(f"重复工作流或无效 output_kind：{workflow.id}")
         if not (workflow.directory / "builder.py").is_file():
             raise ValueError(f"工作流缺少 builder.py：{workflow.id}")
+        plugins, plugin_nodes = manifest.get("plugins"), manifest.get("plugin_nodes")
+        if (not isinstance(plugins, list) or not all(isinstance(plugin, str) for plugin in plugins)
+                or not isinstance(plugin_nodes, dict)
+                or not all(isinstance(node, str) and node.strip() for node in plugin_nodes.values())
+                or len(set(plugins)) != len(plugins) or set(plugins) != plugin_nodes.keys()):
+            raise ValueError(f"{workflow.id} 的 plugins 与 plugin_nodes 无效或不一致")
+        unsupported = set(plugins) - setup_env.CUSTOM_NODES.keys()
+        if unsupported:
+            raise ValueError(f"{workflow.id} 包含不受支持的插件：{', '.join(sorted(unsupported))}")
         workflows[workflow.id] = workflow
     comfy_assets.validate_assets((item for workflow in workflows.values() for item in workflow.manifest.get("weights", [])),
                                  setup_env.COMFY_MODELS_DIR)
@@ -154,8 +163,9 @@ def workflow_id(value=None):
 
 def plugins_for(workflow, profile, params):
     manifest = get_workflow(workflow_id(workflow)).manifest
+    plugins = manifest.get("plugins") or tuple(manifest.get("plugin_nodes", ()))
     return tuple(
-        plugin for plugin in manifest["plugins"]
+        plugin for plugin in plugins
         if plugin != "comfyui-SelfLift" or params.get("use_selflift", True)
     )
 

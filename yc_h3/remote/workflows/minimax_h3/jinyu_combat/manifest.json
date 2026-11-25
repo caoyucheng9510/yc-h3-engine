@@ -15,6 +15,7 @@
     "LoadVideo",
     "GetVideoComponents"
   ],
+  "plugins": ["ComfyUI-KJNodes", "comfyui-SelfLift"],
   "plugin_nodes": {
     "ComfyUI-KJNodes": "MiniMaxChunkFeedForward",
     "comfyui-SelfLift": "SelfLiftH3Sampler"

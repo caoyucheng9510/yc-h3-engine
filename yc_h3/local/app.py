@@ -1096,10 +1096,7 @@ class App:
                 unmanaged = [
                     row for row in sessions
                     if row["name"].startswith(config.SESSION_PREFIX)
-                    and (
-                        row["name"] == name
-                        or (row.get("host") and row["host"] != managed.get(row["name"], {}).get("host"))
-                    )
+                    and (not row.get("host") or row["host"] != managed.get(row["name"], {}).get("host"))
                 ]
                 if unmanaged:
                     names = ", ".join(row["name"] for row in unmanaged)
@@ -1115,17 +1112,27 @@ class App:
                     "status": "ok", "action": "noop", "session_name": name, "reason": "没有需要对账的受管 Colab 会话",
                 }
 
-            stopped_at = time.time()
-            if host and self.tunnel.session == name:
-                self.tunnel.stop()
             if host:
+                stopped_at = time.time()
+                if self.tunnel.session == name:
+                    self.tunnel.stop()
                 self._queue_stop_billing(name, record, stopped_at, self._fresh_billing_info(), balance_before=None)
             else:
-                return {"status": "block", "code": "needs_reconcile", "session_name": name,
-                        "reason": "分配结果仍未确认，已保留占位等待 Colab 会话出现"}
+                account = self._account_fingerprint()
+                if record.get("account_fp", account) != account:
+                    return {"status": "block", "code": "session_account_mismatch", "session_name": name,
+                            "reason": "请切换回占位记录所属的 Colab 账号再对账"}
+
+                def clear_placeholder(data):
+                    if data["managed_sessions"].get(name) != record:
+                        raise TaskError("Colab 本地会话占位已变化，请重新对账")
+                    del data["managed_sessions"][name]
+
+                self.settings.mutate(clear_placeholder)
             self._clear_job_tracking(name)
             self.colab.kick()
-            self._settle_stop_billing()
+            if host:
+                self._settle_stop_billing()
             return {
                 "status": "ok", "action": "cleared", "session_name": name,
                 "reason": "Colab 会话列表中无对应实例，已清理本地受管记录",
@@ -1505,7 +1512,7 @@ class App:
                 }
 
             self._check_not_expired_or_cancelled(name)
-            task.log("③ 打包并上传远端引擎 engine/remote/ → %s …" % config.REMOTE_APP_DIR)
+            task.log("③ 打包并上传远端引擎 yc_h3/remote/ → %s …" % config.REMOTE_APP_DIR)
             t0 = time.time()
             if allocation is not None:
                 allocation["bootstrap_started_at"] = t0
