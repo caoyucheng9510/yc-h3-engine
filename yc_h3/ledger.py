@@ -49,11 +49,15 @@ def _account_fp(provider: str, provided: str | None, config: EngineConfig) -> st
         env_key = _WALLET_CREDENTIALS.get(wallet_owner(provider))
         key = config.get(env_key) if env_key else None
         return credential_fingerprint(key) if key else ""
-    if not isinstance(provided, str) or not re.fullmatch(r"[0-9a-fA-F]{12,64}|", provided):
-        raise ValueError("account_fp 必须为非敏感的十六进制凭据指纹")
-    if provided and redact_secrets(provided, *config.secrets) != provided:
-        raise ValueError("account_fp 必须为非敏感的十六进制凭据指纹")
-    return provided.lower()
+    error = "account_fp 必须为非敏感的十六进制凭据指纹"
+    if not isinstance(provided, str):
+        raise ValueError(error)
+    fingerprint = provided.strip().lower()
+    if not re.fullmatch(r"[0-9a-f]{12,64}|", fingerprint) or (
+        fingerprint and any(fingerprint == secret.strip().lower() for secret in config.secrets)
+    ):
+        raise ValueError(error)
+    return fingerprint
 
 
 def _provider(value: str, config: EngineConfig) -> str:

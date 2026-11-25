@@ -1,22 +1,24 @@
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import ExitStack
 from threading import Barrier
+from uuid import UUID
 
 import pytest
 
-from yc_h3.config import load_config
+from yc_h3 import tasks_store
+from yc_h3.config import credential_fingerprint, load_config
 from yc_h3.fsutil import atomic_write_json, sha256_file
 from yc_h3.providers._concurrency import ProviderSlots, count_active_tasks
 from yc_h3.providers.base import ProviderError, publish_atomic_no_clobber
 from yc_h3.tasks_store import (
-    AmbiguousTaskError, TaskConflictError, TaskStore, comfy_job_delivery_state,
+    AmbiguousTaskError, TaskConflictError, TaskStore, comfy_job_delivery_state, delivery_confirmed,
     make_task_key, submission_identity,
 )
 
 
 def external(store, **options):
     return store.begin_external_submit(
-        "take", provider="runninghub", strict_reuse=True, request_digest="request-digest",
+        "take", provider="runninghub", request_digest="request-digest",
         credential_fingerprint="fingerprint", endpoint_origin="https://example.test",
         logical_target="scene/take.mp4", **options,
     )
@@ -165,6 +167,76 @@ def test_checkpoint_redacts_explicit_and_runtime_credentials(tmp_path):
     record = store.task_path("take").read_text(encoding="utf-8")
     for secret in ("configured-key-for-test", "response-token", "unknown-key", "runtime-test-token"):
         assert secret not in record
+
+
+def test_checkpoint_preserves_core_fields_and_redacts_external_metadata(tmp_path, monkeypatch):
+    chenyu_key = "synthetic-chenyu-api-key"
+    runninghub_key = "synthetic-runninghub-api-key"
+    cfg = load_config(cwd=tmp_path, data_dir=tmp_path / "data", environ={
+        "DISABLE_AUTH": "1",
+        "NPM_CONFIG_ALWAYS_AUTH": "true",
+        "SSH_AUTH_SOCK": "/tmp/agent.sock",
+        "CHENYU_API_KEY": chenyu_key,
+        "RUNNINGHUB_API_KEY": runninghub_key,
+    })
+    artifact = tmp_path / "shot-1_true.mp4"
+    artifact.write_bytes(b"verified artifact")
+    digest = sha256_file(artifact)
+    # Exercise an actual substring collision with a structured SHA-256 and UUID.
+    runtime_token = digest[:8]
+    submission_id = UUID(f"{runtime_token}-1111-4111-8111-111111111111")
+    monkeypatch.setattr(tasks_store.uuid, "uuid4", lambda: submission_id)
+    store = TaskStore(config=cfg, runtime_tokens=(runtime_token,))
+    checkpoint = {
+        "task_key": "shot-1_true",
+        "provider": "runninghub",
+        "request_digest": digest,
+        "credential_fingerprint": credential_fingerprint(runninghub_key),
+        "endpoint_origin": "https://example.test",
+        "logical_target": "out/shot-1_true.mp4",
+    }
+    task_key = checkpoint["task_key"]
+    action, attempt = store.begin_external_submit(**checkpoint, extra={"external": {"apiKey": chenyu_key}})
+    assert action == "submit"
+    assert attempt["submission_id"] == str(submission_id)
+    store.cache_comfy_submit(task_key, {"detail": runtime_token}, expected_submission_id=str(submission_id))
+    store.mark_external_submitted(task_key, "remote-1_true", expected_submission_id=str(submission_id))
+    store.record_cancel_error(task_key, error=f"failed {runninghub_key}")
+    store.mark_perf_archived(task_key, perf_summary={"detail": chenyu_key})
+    store.reserve_delivery(task_key, reserved_output_path=artifact, artifact_sha256=digest,
+                           expected_submission_id=str(submission_id))
+
+    action, delivered = store.begin_external_submit(**checkpoint)
+    assert action == "delivered"
+    assert delivered == store.get(task_key)
+    assert {key: delivered[key] for key in checkpoint} == checkpoint
+    assert delivered["submission_id"] == str(submission_id)
+    assert delivered["remote_task_id"] == "remote-1_true"
+    assert delivered["artifact_path"] == delivered["reserved_output_path"] == str(artifact.resolve())
+    assert delivered["artifact_sha256"] == digest
+    assert delivered["created_at"] == attempt["created_at"]
+    proof, = delivered["job_history"]
+    assert proof["submission_id"] == str(submission_id)
+    assert delivery_confirmed(proof)
+    assert delivered["external"] == {"apiKey": "[REDACTED]"}
+    assert delivered["cached_submit_payload"] == delivered["perf_summary"] == {"detail": "[REDACTED]"}
+    assert delivered["cancel_error"] == "failed [REDACTED]"
+    raw = store.task_path(task_key).read_text(encoding="utf-8")
+    assert chenyu_key not in raw and runninghub_key not in raw
+
+
+@pytest.mark.parametrize("terminal_state", ["failed", "cancelled"])
+def test_external_submit_requires_force_new_by_default_after_terminal_state(tmp_path, terminal_state):
+    store = TaskStore(data_dir=tmp_path)
+    _, first = external(store)
+    if terminal_state == "failed":
+        store.mark_failed("take", error="failure")
+    else:
+        store.mark_cancelled("take")
+    with pytest.raises(TaskConflictError, match="--force-new"):
+        external(store)
+    action, replacement = external(store, force_new=True, replaced_submission_id=first["submission_id"])
+    assert action == "submit" and replacement["replaced_submission_id"] == first["submission_id"]
 
 
 def test_provider_slots_and_active_count_are_scoped(tmp_path):

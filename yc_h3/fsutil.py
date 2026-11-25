@@ -36,7 +36,8 @@ def atomic_writer(path: Path, *, temp: Path | None = None, mode: int = 0o600) ->
     else:
         if temp.parent.resolve() != path.parent.resolve() or temp.resolve() == path.resolve():
             raise ValueError("暂存文件须与目标文件同目录且使用不同路径")
-        fd = os.open(temp, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+        flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_BINARY", 0)
+        fd = os.open(temp, flags, 0o600)
     try:
         with os.fdopen(fd, "wb") as stream:
             if os.name != "nt" and mode != 0o600:
@@ -206,11 +207,16 @@ _SECRET_KEY = re.compile(
     r"(?:^|_)(?:api_?key|auth(?:orization)?(?:_token|_key)?|token|secret|password|passwd|cookie|credential)(?:$|_)",
     re.IGNORECASE,
 )
+_NON_SECRET_SUFFIXES = (
+    "_fp", "_fingerprint", "_sha256", "_hash", "_digest", "_file", "_path", "_dir",
+    "_sock", "_socket", "_mode", "_type", "_enabled", "_disabled", "_url", "_uri",
+    "_host", "_port", "_timeout", "_count",
+)
 
 
 def is_secret_key(key: str) -> bool:
     normalized = re.sub(r"([a-z])([A-Z])", r"\1_\2", key).replace("-", "_").lower()
-    if normalized.endswith(("_fp", "_fingerprint", "_sha256", "_hash", "_file", "_path", "_digest")):
+    if normalized.endswith(_NON_SECRET_SUFFIXES):
         return False
     return bool(_SECRET_KEY.search(normalized))
 

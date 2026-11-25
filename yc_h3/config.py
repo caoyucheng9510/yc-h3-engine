@@ -18,6 +18,8 @@ _DOUBLE_QUOTED = re.compile(r'"((?:[^"\\]|\\.)*)"')
 _SINGLE_QUOTED = re.compile(r"'([^']*)'")
 _ESCAPES = {"n": "\n", "r": "\r", "t": "\t", '"': '"', "\\": "\\", "b": "\b", "f": "\f"}
 _CONFIG_PREFIXES = ("YC_H3_", "COLAB_", "RUNNINGHUB_", "CHENYU_")
+_KNOWN_API_KEY_NAMES = {"RUNNINGHUB_API_KEY", "CHENYU_API_KEY"}
+_NON_SECRET_LITERALS = {"", "0", "1", "true", "false", "yes", "no", "on", "off", "none", "null"}
 
 
 def default_data_dir() -> Path:
@@ -121,9 +123,18 @@ def credential_fingerprint(credential: str) -> str:
 
 
 def _secret_values(layers: Iterable[Mapping[str, str]]) -> frozenset[str]:
-    return frozenset(
-        value for layer in layers for key, value in layer.items() if value.strip() and is_secret_key(key)
-    )
+    secrets = set()
+    for layer in layers:
+        for key, value in layer.items():
+            if not is_secret_key(key):
+                continue
+            cleaned = value.strip()
+            if cleaned.lower() in _NON_SECRET_LITERALS:
+                continue
+            if len(cleaned) < 6 and key.upper() not in _KNOWN_API_KEY_NAMES:
+                continue
+            secrets.add(value)
+    return frozenset(secrets)
 
 
 @dataclass(frozen=True)

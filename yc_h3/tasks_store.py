@@ -44,6 +44,15 @@ ALLOWED_TRANSITIONS: Dict[str, frozenset[str]] = {
 
 _SAFE_KEY_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,119}$")
 _SLUG_RE = re.compile(r"[^A-Za-z0-9._-]+")
+_CHECKPOINT_FIELDS = frozenset({
+    "task_key", "provider", "state", "submission_id", "replaced_submission_id",
+    "client_request_id", "request_digest", "credential_fingerprint", "endpoint_origin",
+    "logical_target", "artifact_path", "reserved_output_path", "artifact_sha256",
+    "remote_job_id", "remote_task_id", "session_name", "vm_host", "instance_id", "instance_uuid",
+    "job_history", "created_at", "updated_at", "submitted_at", "delivered_at",
+    "previous_state", "previous_remote_job_id", "previous_remote_task_id", "perf_archived",
+    "recovered_from_reserved_delivery",
+})
 
 
 class TaskStoreError(RuntimeError):
@@ -297,7 +306,9 @@ class TaskStore:
         if record.get("state") not in VALID_STATES:
             raise ValueError("无效任务状态")
         record["job_history"] = _job_history(record)
-        safe_record = self.config.redact(record, *self._runtime_tokens)
+        safe_record = {key: value for key, value in record.items() if key in _CHECKPOINT_FIELDS}
+        metadata = {key: value for key, value in record.items() if key not in _CHECKPOINT_FIELDS}
+        safe_record.update(self.config.redact(metadata, *self._runtime_tokens))
         _atomic_write_json(self.task_path(task_key), safe_record)
         return safe_record
 
@@ -305,12 +316,7 @@ class TaskStore:
     def _apply_extra(record: dict, extra: dict | None) -> None:
         if not extra:
             return
-        reserved = {"task_key", "provider", "submission_id", "client_request_id", "request_digest",
-                    "logical_target", "session_name", "instance_id", "instance_uuid", "job_history",
-                    "state", "remote_job_id", "remote_task_id", "artifact_path", "reserved_output_path",
-                    "artifact_sha256", "replaced_submission_id", "credential_fingerprint", "endpoint_origin",
-                    "vm_host", "created_at", "updated_at"}
-        if reserved.intersection(extra):
+        if _CHECKPOINT_FIELDS.intersection(extra):
             raise ValueError("附加元数据不能覆盖断点核心字段")
         record.update(extra)
 
@@ -608,7 +614,7 @@ class TaskStore:
         task_key: str,
         *,
         provider: str,
-        strict_reuse: bool = False,
+        strict_reuse: bool = True,
         request_digest: str,
         credential_fingerprint: str,
         endpoint_origin: str,
@@ -629,6 +635,8 @@ class TaskStore:
         or ``submitting`` without ``remote_task_id`` (unless ``force_new=True``).
         Raises ``ExpiredTaskError`` when existing checkpoint is ``expired_or_missing``
         (unless ``force_new=True``).
+
+        With default strict reuse, failed and cancelled attempts require ``force_new=True``.
         """
         task_key = self._validate_key(task_key)
         normalized_target = normalize_logical_target(logical_target)
@@ -702,7 +710,7 @@ class TaskStore:
                         "断点已保留待确认，确认未扣费后请使用 --force-new",
                         record=dict(existing),
                     )
-                # failed / cancelled -> allow creating a new attempt below
+                # Callers opting out of strict reuse may replace failed or cancelled attempts.
 
             now = time.time()
             record: Dict[str, Any] = {

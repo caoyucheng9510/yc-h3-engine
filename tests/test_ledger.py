@@ -83,6 +83,42 @@ def test_runninghub_usage_is_idempotent_under_concurrent_writers(config):
     assert ledger.summarize_usage(config=config)["jobs"][0]["quantity"] == 2
 
 
+def test_account_fingerprint_and_labels_survive_host_auth_settings(config, tmp_path):
+    chenyu_key = "ab12cd34ef56"
+    runninghub_key = "synthetic-runninghub-api-key"
+    cfg = load_config(data_dir=config.data_dir, cwd=tmp_path, environ={
+        "DISABLE_AUTH": "1",
+        "NPM_CONFIG_ALWAYS_AUTH": "true",
+        "SSH_AUTH_SOCK": "/tmp/agent.sock",
+        "CHENYU_API_KEY": f" {chenyu_key} ",
+        "RUNNINGHUB_API_KEY": runninghub_key,
+    })
+    # A fingerprint may contain a known key as a substring. Only a complete match is sensitive.
+    fingerprint = f"1{chenyu_key}".ljust(64, "f")
+    note = f"job-1 true ({chenyu_key}) {runninghub_key} Bearer runtime-token"
+    expected_note = "job-1 true ([REDACTED]) [REDACTED] [REDACTED]"
+    balance = ledger.set_balance(config=cfg, provider="chenyu-comfy", account_fp=f" {fingerprint.upper()} ",
+                                 unit="CNY", balance=20, ts=BEFORE, note=note)
+    assert balance["account_fp"] == fingerprint and balance["note"] == expected_note
+    assert ledger.list_balances(config=cfg, provider="chenyu", account_fp=fingerprint) == [balance]
+
+    fields = {"account_fp": fingerprint, "project": "project-1_true", "note": note}
+    result = usage(cfg, "chenyu-comfy", "job", 2, "job-1_true", **fields)
+    assert result["recorded"]
+    assert result["entry"]["account_fp"] == fingerprint
+    assert result["entry"]["provider"] == "chenyu-comfy"
+    assert result["entry"]["project"] == fields["project"]
+    assert result["entry"]["idempotency_key"] == "job-1_true"
+    assert result["entry"]["note"] == expected_note
+    assert usage(cfg, "chenyu-comfy", "job", 2, "job-1_true", **fields)["duplicate"]
+
+    for raw in (chenyu_key, f" {chenyu_key.upper()} ", runninghub_key):
+        with pytest.raises(ValueError, match="account_fp"):
+            usage(cfg, "chenyu", "job", 2, "invalid", account_fp=raw)
+        with pytest.raises(ValueError, match="account_fp"):
+            ledger.set_balance(config=cfg, provider="chenyu", account_fp=raw, unit="CNY", balance=20)
+
+
 def test_stop_records_cash_card_and_redacts_credentials(config, tmp_path):
     (tmp_path / ".env").write_text("CHENYU_API_KEY=synthetic-chenyu-credential\nCOLAB_CNY_PER_CU=0.5\n")
     cfg = load_config(data_dir=config.data_dir, cwd=tmp_path, environ={})

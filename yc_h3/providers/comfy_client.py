@@ -203,6 +203,7 @@ class LocalDaemonClient(ManagedComfyClient):
                 raise self._error(resp.status, detail, code="download_failed")
             expected_len = parse_content_length(resp.getheader("Content-Length"))
             written = 0
+            dst_path.parent.mkdir(parents=True, exist_ok=True)
             with atomic_writer(dst_path) as stream:
                 while chunk := resp.read(256 * 1024):
                     stream.write(chunk)
