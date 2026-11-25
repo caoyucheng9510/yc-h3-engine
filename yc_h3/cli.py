@@ -1,0 +1,575 @@
+"""Standalone command-line interface for yc-h3-engine."""
+from __future__ import annotations
+
+import argparse
+import getpass
+import http.client
+import json
+import math
+import sys
+from pathlib import Path
+
+from . import ledger
+from .config import global_env_path, load_config, read_env_file, update_env_file
+from .providers import registry, video_common
+from .providers._http import validate_api_key
+from .providers.base import GenerationRequest, PreflightResult, PreflightBlockedError, ProviderConflictError, ProviderError
+from .tasks_store import TaskConflictError, TaskStore, TaskStoreError
+from .remote.workflows.minimax_h3.spec import JINYU_WORKFLOWS
+
+_INIT_KEYS = (
+    "RUNNINGHUB_API_KEY", "RUNNINGHUB_WORKFLOW_ID", "RUNNINGHUB_WORKFLOW_ID_HYBRID", "RUNNINGHUB_WORKFLOW_ID_COMBAT",
+    "CHENYU_API_KEY", "YC_H3_DATA_DIR", "RUNNINGHUB_CNY_PER_POINT", "COLAB_CNY_PER_CU",
+)
+_SUMMARY_FIELDS = ("task_key", "provider", "state", "workflow", "tag", "remote_job_id", "remote_task_id",
+                   "artifact_path", "artifact_sha256", "created_at", "updated_at", "delivered_at", "perf_archived")
+_HISTORY_FIELDS = ("remote_job_id", "status", "delivered_path", "artifact_sha256")
+
+
+class ArgumentParser(argparse.ArgumentParser):
+    def error(self, message):
+        raise ValueError(message)
+
+
+def _json_flag(parser):
+    parser.add_argument("--json", action="store_true", help="输出 JSON")
+
+
+def _provider_flag(parser):
+    parser.add_argument("--provider", choices=registry.PROVIDER_ORDER, help="指定通道")
+
+
+def _daemon_address(parser):
+    parser.add_argument("--host", help="本机回环地址")
+    parser.add_argument("--port", type=int, help="守护进程端口")
+
+
+def _parser():
+    parser = ArgumentParser(description="MiniMax H3 多通道视频生成与交付")
+    parser.add_argument("--env-file", type=Path, help="显式指定 .env 配置")
+    parser.add_argument("--data-dir", type=Path, help="断点、受管会话和台账目录")
+    commands = parser.add_subparsers(dest="command", required=True)
+
+    init = commands.add_parser("init", help="配置向导")
+    init.add_argument("--local", action="store_true", help="写入当前目录的 .env")
+    init.add_argument("--from-stdin-json", action="store_true", help="从标准输入读取键值 JSON 对象")
+    init.add_argument("--update", "--overwrite", action="store_true", help="更新本次给出的键并保留其他键")
+    _json_flag(init)
+
+    doctor = commands.add_parser("doctor", help="只读检查环境、配置和通道")
+    _provider_flag(doctor)
+    doctor.add_argument("--workflow", help="检查指定工作流的配置")
+    doctor.add_argument("--remote", action="store_true", help="查询已配置通道的实时余额")
+    _json_flag(doctor)
+
+    providers = commands.add_parser("providers", help="列出通道及可用性")
+    providers.add_argument("--probe", action="store_true", help="探测通道连接及本地配置")
+    providers.add_argument("--remote", action="store_true", help="查询通道实时余额")
+    _json_flag(providers)
+
+    workflows = commands.add_parser("workflows", help="列出内置工作流与素材槽位")
+    _provider_flag(workflows)
+    workflows.add_argument("--remote", action="store_true", help="同时查询已连接受管 GPU 的工作流目录")
+    _json_flag(workflows)
+
+    for name, help_text in (("preflight", "只读预检与审批报价"), ("gen", "使用实时审批摘要生成视频")):
+        gen = commands.add_parser(name, help=help_text)
+        _provider_flag(gen)
+        gen.add_argument("--workflow", help="工作流，默认 jinyu-hybrid")
+        gen.add_argument("--task", choices=("t2v", "i2v", "r2v"), help="默认按素材推断")
+        prompt = gen.add_mutually_exclusive_group(required=True)
+        prompt.add_argument("--prompt", help="完整 MiniMax H3 提示词")
+        prompt.add_argument("--prompt-file", type=Path, help="UTF-8 提示词文件，使用 - 从标准输入读取")
+        gen.add_argument("--image", type=Path, action="append", help="参考图，可重复")
+        gen.add_argument("--audio", type=Path, action="append", help="参考音频，可重复")
+        gen.add_argument("--video", type=Path, action="append", help="参考视频，可重复")
+        gen.add_argument("--first-frame", type=Path, help="ComfyUI i2v 首帧")
+        gen.add_argument("--mute-reference-video", action="store_true", help="忽略所有参考视频伴音")
+        gen.add_argument("--seconds", type=float)
+        gen.add_argument("--aspect")
+        gen.add_argument("--width", type=int)
+        gen.add_argument("--height", type=int)
+        gen.add_argument("--seed", type=int)
+        gen.add_argument("--steps", type=int)
+        gen.add_argument("--megapixels", type=float, help="晨羽按次 API 分辨率档位")
+        for field in ("upscale-2x", "save-last-frame", "no-music", "trim-to-requested-seconds"):
+            gen.add_argument(f"--{field}", action="store_true", default=None)
+        gen.add_argument("--out", type=Path, required=True, help="目标 MP4 路径，重名时递增版本")
+        gen.add_argument("--job-key", help="指定断点键，默认从 --out 生成")
+        gen.add_argument("--tag", help="费用台账分组")
+        gen.add_argument("--force-new", action="store_true", help="通过新审批替换现有断点")
+        if name == "gen":
+            gen.add_argument("--approve-digest", help="相同请求的最新 preflight 审批摘要")
+        else:
+            gen.add_argument("--simulated-gpu", help="用于规划的 ComfyUI GPU 模拟")
+        _json_flag(gen)
+
+    jobs = commands.add_parser("jobs", help="查询、恢复、领取或取消任务")
+    job_commands = jobs.add_subparsers(dest="job_action", required=True)
+    ls = job_commands.add_parser("list")
+    _provider_flag(ls)
+    _json_flag(ls)
+    for name in ("resume", "fetch", "cancel"):
+        job = job_commands.add_parser(name)
+        job.add_argument("task_key")
+        if name != "cancel":
+            job.add_argument("--out", type=Path, help="改用目标 MP4 路径")
+            job.add_argument("--remote-job-id", "--remote-task-id", help="指定已有远端作业或订单 ID")
+        _json_flag(job)
+
+    gpu = commands.add_parser("gpu", help="管理受管 GPU 会话")
+    gpu_commands = gpu.add_subparsers(dest="gpu_action", required=True)
+    for name in ("plan", "up", "status", "reconcile", "stop", "save-image"):
+        action = gpu_commands.add_parser(name)
+        action.add_argument("--backend", choices=("colab", "chenyu"), default="colab")
+        _daemon_address(action)
+        if name != "status":
+            action.add_argument("--session")
+        if name in ("plan", "up"):
+            action.add_argument("--gpu")
+            action.add_argument("--max-runtime-minutes", type=int)
+            action.add_argument("--idle-minutes", type=int)
+            action.add_argument("--high-mem", action=argparse.BooleanOptionalAction, default=None)
+            action.add_argument("--setup", action="store_true")
+            action.add_argument("--setup-params", type=json.loads, help="setup 参数 JSON 对象")
+            action.add_argument("--image-uuid")
+            action.add_argument("--pod-uuid")
+            action.add_argument("--pod-tag")
+        if name in ("up", "save-image"):
+            action.add_argument("--approve-digest")
+        if name == "up":
+            action.add_argument("--no-connect", action="store_true")
+        if name == "reconcile":
+            action.add_argument("--clear-missing", action="store_true", help="晨羽确认无实例后清理分配占位")
+        if name == "stop":
+            action.add_argument("--shutdown-only", action="store_true", help="晨羽仅关机，保留实例")
+        _json_flag(action)
+
+    daemon = commands.add_parser("daemon", help="管理本机 Colab 守护进程")
+    daemon_commands = daemon.add_subparsers(dest="daemon_action", required=True)
+    for name in ("start", "status", "stop"):
+        action = daemon_commands.add_parser(name)
+        _daemon_address(action)
+        if name == "start":
+            action.add_argument("--foreground", action="store_true")
+            action.add_argument("--no-auto-tunnel", action="store_true")
+        if name == "stop":
+            mode = action.add_mutually_exclusive_group()
+            mode.add_argument("--stop-colab", action="store_true")
+            mode.add_argument("--detach-colab", action="store_true")
+        _json_flag(action)
+
+    costs = commands.add_parser("ledger", help="记录费用、核对钱包余额和汇总")
+    cost_commands = costs.add_subparsers(dest="ledger_action", required=True)
+    record = cost_commands.add_parser("record")
+    record.add_argument("--provider", choices=registry.PROVIDER_ORDER, required=True)
+    record.add_argument("--quantity", type=float, required=True)
+    record.add_argument("--unit", choices=ledger.UNITS, required=True)
+    record.add_argument("--idempotency-key", required=True)
+    record.add_argument("--record-type", choices=ledger.RECORD_TYPES, default="external")
+    record.add_argument("--action", default="manual")
+    record.add_argument("--estimated", action="store_true")
+    record.add_argument("--est-cny", type=float)
+    record.add_argument("--tag")
+    record.add_argument("--note")
+    record.add_argument("--account-fp")
+    _json_flag(record)
+    summary = cost_commands.add_parser("summary")
+    _provider_flag(summary)
+    summary.add_argument("--tag")
+    summary.add_argument("--since")
+    summary.add_argument("--account-fp")
+    _json_flag(summary)
+    balance = cost_commands.add_parser("balance")
+    balance_commands = balance.add_subparsers(dest="balance_action", required=True)
+    sync = balance_commands.add_parser("sync", description="仅支持 runninghub / chenyu 实时余额同步")
+    sync.add_argument("--provider", choices=("runninghub", "chenyu"), required=True)
+    _json_flag(sync)
+    set_balance = balance_commands.add_parser("set")
+    set_balance.add_argument("--provider", choices=registry.PROVIDER_ORDER, required=True)
+    set_balance.add_argument("--unit", choices=ledger.UNITS, required=True)
+    set_balance.add_argument("--balance", type=float)
+    set_balance.add_argument("--cash-balance", type=float)
+    set_balance.add_argument("--card-balance", type=float)
+    set_balance.add_argument("--note", default="")
+    set_balance.add_argument("--account-fp")
+    _json_flag(set_balance)
+    show = balance_commands.add_parser("show")
+    _provider_flag(show)
+    show.add_argument("--account-fp")
+    _json_flag(show)
+    return parser
+
+
+def _print(value, *, file=None):
+    file = file or sys.stdout
+    encoding = getattr(file, "encoding", None) or "utf-8"
+    print(value.encode(encoding, errors="backslashreplace").decode(encoding), file=file)
+
+
+def _emit(data, args, config=None):
+    value = config.redact(data) if config else data
+    if not args.json:
+        if args.command in ("preflight", "gen") and isinstance(value, dict):
+            provider = value.get("selected_provider") or value.get("provider_id")
+            if provider:
+                _print(f"通道 {provider}")
+            if path := value.get("artifact_path"):
+                _print(f"已交付 {path}")
+        elif args.command == "init":
+            _print(f".env {value['status']} {value['path']}")
+            return
+    rendered = json.dumps(value, ensure_ascii=False, indent=2, allow_nan=False)
+    try:
+        rendered.encode(getattr(sys.stdout, "encoding", None) or "utf-8")
+    except UnicodeEncodeError:
+        rendered = json.dumps(value, ensure_ascii=True, indent=2, allow_nan=False)
+    _print(rendered)
+
+
+def _init(args):
+    target = args.env_file or (Path.cwd() / ".env" if args.local else global_env_path())
+    if args.env_file and args.local:
+        raise ValueError("--local 与 --env-file 互斥")
+    target = target.expanduser().absolute()
+    if target.is_symlink():
+        raise ValueError(".env 不能是符号链接")
+    exists = target.exists()
+    if args.from_stdin_json:
+        try:
+            supplied = json.load(sys.stdin)
+        except (ValueError, UnicodeError):
+            raise ValueError("标准输入必须为有效 JSON 键值对象") from None
+        if not isinstance(supplied, dict) or any(not isinstance(v, str) for v in supplied.values()):
+            raise ValueError("标准输入必须为键值均为字符串的 JSON 对象")
+    else:
+        supplied = {}
+    if exists and not args.update:
+        existing = read_env_file(target)
+        update_env_file(target, {})
+        safe_path = load_config(env_file=target).redact(str(target))
+        return {"status": "kept", "path": safe_path, "configured_keys": sorted(key for key in _INIT_KEYS if key in existing)}
+    if not args.from_stdin_json and sys.stdin.isatty():
+        for key in ("RUNNINGHUB_API_KEY", "RUNNINGHUB_WORKFLOW_ID", "CHENYU_API_KEY"):
+            entered = getpass.getpass(f"{key}（留空跳过） ").strip()
+            if entered:
+                supplied[key] = entered
+    if not exists:
+        supplied = {**dict.fromkeys(_INIT_KEYS, ""), **supplied}
+    update_env_file(target, supplied, overwrite=args.update)
+    safe_path = load_config(env_file=target).redact(str(target))
+    return {"status": "updated" if exists else "created", "path": safe_path}
+
+
+def _doctor(args, config):
+    ffmpeg, ffprobe = video_common.ffmpeg_bin(), video_common.ffprobe_bin()
+    supported = sys.platform != "win32"
+    colab = {"platform_supported": supported}
+    if supported and args.provider in (None, "colab-comfy"):
+        from .providers.colab_comfy import colab_cli_status
+
+        colab.update(colab_cli_status(config))
+    elif not supported:
+        colab.update(reason=registry.WINDOWS_COLAB_REASON, detail="请使用 WSL2 或选择原生 Windows 通道。")
+    workflow_name = registry.normalize_workflow(args.workflow, args.provider)
+    names = (args.provider,) if args.provider else registry.PROVIDER_ORDER
+    runninghub_workflows = []
+    if "runninghub" in names and args.workflow is None:
+        runninghub_workflows = [
+            {"workflow": name, **registry.probe_provider("runninghub", config, workflow=name).to_dict()}
+            for name in JINYU_WORKFLOWS
+        ]
+        workflow_name = next((row["workflow"] for row in runninghub_workflows if row["available"]), workflow_name)
+    probes = [registry.probe_provider(name, config, remote=args.remote, workflow=workflow_name).to_dict() for name in names]
+    check_tools = bool(ffmpeg and ffprobe and sys.version_info >= (3, 12))
+    result = {
+        "status": "pass" if check_tools else "block", "python": sys.version.split()[0],
+        "ffmpeg": ffmpeg, "ffprobe": ffprobe, "env_files": list(map(str, config.env_files)),
+        "env_priority": "显式 .env > 当前目录 .env > 全局 .env > 进程环境",
+        "credential_status": {key: validate_api_key(config.get(key))[1] or "configured"
+                              for key in ("RUNNINGHUB_API_KEY", "CHENYU_API_KEY")},
+        "data_dir": str(config.data_dir), "colab": colab, "providers": probes,
+    }
+    if not ffmpeg or not ffprobe:
+        result["ffmpeg_install"] = {"macOS": "brew install ffmpeg", "Windows": "winget install Gyan.FFmpeg",
+                                    "Linux": "从系统包管理器安装 ffmpeg"}
+    if runninghub_workflows:
+        result["runninghub_workflows"] = runninghub_workflows
+    if args.provider and not probes[0]["available"]:
+        result["status"] = "block"
+    return result, 0 if result["status"] == "pass" else 3
+
+
+def _workflows(args, config):
+    providers = (args.provider,) if args.provider else registry.PROVIDER_ORDER
+    workflows = [row for name in providers for row in registry.workflow_catalog(name)]
+    if not args.remote:
+        return workflows, 0
+    remotes = {}
+    for name in providers:
+        if name not in ("colab-comfy", "chenyu-comfy"):
+            continue
+        probe = registry.probe_provider(name, config)
+        if not probe.available:
+            remotes[name] = probe.to_dict()
+            continue
+        try:
+            remotes[name] = registry.get_provider(name, config).remote_workflows()
+        except (OSError, http.client.HTTPException, ProviderError, ValueError) as exc:
+            remotes[name] = {"available": False, "reason": getattr(exc, "code", "remote_unavailable")}
+    return {"workflows": workflows, "remote": remotes}, 0
+
+
+def _generation(args, config):
+    prompt = args.prompt
+    if args.prompt_file is not None:
+        prompt = sys.stdin.read() if args.prompt_file == Path("-") else args.prompt_file.read_text(encoding="utf-8-sig")
+    params = {key: getattr(args, key) for key in (
+        "width", "height", "aspect", "seconds", "seed", "steps", "megapixels", "upscale_2x",
+        "save_last_frame", "no_music", "trim_to_requested_seconds",
+    ) if getattr(args, key) is not None}
+    if any(not math.isfinite(value) for key, value in params.items() if key in ("seconds", "megapixels")):
+        raise ValueError("--seconds 与 --megapixels 须为有限数")
+    if "seconds" in params:
+        seconds = params["seconds"]
+        if not 0.2 <= seconds <= 15:
+            raise ValueError("--seconds 须介于 0.2 和 15 之间")
+        if seconds.is_integer():
+            params["seconds"] = int(seconds)
+    if "steps" in params and not 1 <= params["steps"] <= 100:
+        raise ValueError("--steps 须介于 1 和 100 之间")
+    if "seed" in params and not -1 <= params["seed"] < 2**64:
+        raise ValueError("--seed 须为 -1 或 64 位无符号整数")
+    inputs = {}
+    for name in ("image", "audio", "video"):
+        if paths := getattr(args, name):
+            inputs[name + "s"] = paths
+    if args.mute_reference_video:
+        if not args.video:
+            raise ValueError("--mute-reference-video 需要 --video")
+        inputs["videos"] = [dict(path=path, use_audio=False) for path in args.video]
+    if args.first_frame:
+        inputs["image_path"] = args.first_frame
+    request = GenerationRequest(
+        "video", prompt=prompt, output_path=args.out, provider_id=args.provider, workflow=args.workflow,
+        job_key=args.job_key, task=args.task, params=params, inputs=inputs, simulated_gpu=getattr(args, "simulated_gpu", None),
+        approve_digest=getattr(args, "approve_digest", None), force_new=args.force_new, metadata={"tag": args.tag},
+    )
+    route = registry.resolve_provider(request, config)
+    store = TaskStore(config=config)
+    if route.provider is None:
+        plan = PreflightResult("", "block", "", "", "", facts={"workflow": request.workflow})
+        plan.signals.append({"severity": "block", "code": "no_eligible_provider", "detail": "没有通道同时满足配置和请求能力"})
+        if args.command == "gen":
+            raise PreflightBlockedError("没有符合请求能力且可用的通道", preflight=plan,
+                                        details={"routing_skipped": route.skipped})
+    elif args.command == "preflight":
+        plan = route.provider.preflight(request, store=store)
+    else:
+        return route.provider.generate(request, store=store).to_dict(), 0
+    data = plan.to_dict()
+    data["approve_digest"] = plan.digest or None
+    data["selected_provider"] = route.provider.provider_id if route.provider else None
+    data["routing_skipped"] = route.skipped
+    return data, plan.exit_code
+
+
+def _job_summary(record):
+    summary = {field: record[field] for field in _SUMMARY_FIELDS if field in record}
+    if record.get("job_history"):
+        summary["job_history"] = [
+            {field: job.get(field) for field in _HISTORY_FIELDS} for job in record["job_history"]
+        ]
+    return summary
+
+
+def _jobs(args, config):
+    store = TaskStore(config=config)
+    if args.job_action == "list":
+        return [_job_summary(record) for record in store.list_tasks(provider=args.provider)], 0
+    record = store.get(args.task_key)
+    if record is None:
+        raise ProviderConflictError("任务断点不存在", code="checkpoint_missing")
+    provider = registry.get_provider(record["provider"], config)
+    if args.job_action == "cancel":
+        return _job_summary(provider.cancel(args.task_key, store=store)), 0
+    method = provider.resume if args.job_action == "resume" else provider.fetch
+    return method(args.task_key, store=store, output_path=args.out, remote_job_id=args.remote_job_id).to_dict(), 0
+
+
+def _colab_client(args, config):
+    from .providers.colab_comfy import require_colab
+    from .providers.comfy_client import LocalDaemonClient
+
+    require_colab()
+    return LocalDaemonClient(host=args.host, port=args.port, config=config)
+
+
+def _daemon(args, config):
+    client = _colab_client(args, config)
+    from .local import daemon
+    from .providers.colab_comfy import check_daemon_identity
+
+    endpoint = dict(host=client.host, port=client.port, engine_config=config)
+    if args.daemon_action == "start":
+        if args.foreground:
+            daemon.run_daemon(**endpoint, no_auto_tunnel=args.no_auto_tunnel)
+            return {"running": False}, 0
+        return daemon.start_daemon_background(**endpoint, no_auto_tunnel=args.no_auto_tunnel), 0
+    state = daemon.daemon_status(**endpoint)
+    if args.daemon_action == "status":
+        return state, 0
+    stop = dict(stop_colab=args.stop_colab, detach_colab=args.detach_colab)
+    if state["running"]:
+        check_daemon_identity(client, config)
+        status, reply = client._request_json("POST", "/api/local/daemon/stop", payload=stop, timeout=180)
+        if status != 200 or not reply.get("ok"):
+            return reply, 3 if status == 409 else 1
+        daemon.wait_for_daemon_exit(client.host, client.port, engine_config=config)
+    elif args.stop_colab or args.detach_colab:
+        reply = daemon.stop_unreachable_daemon(expected_host=client.host, expected_port=client.port,
+                                               engine_config=config, **stop)
+    else:
+        reply = {"ok": True, "running": False}
+    return reply, 0 if reply.get("ok") else 3
+
+
+def _gpu(args, config):
+    action = args.gpu_action
+    if args.backend == "colab":
+        client = _colab_client(args, config)
+        from .providers.colab_comfy import check_daemon_identity
+
+        if action == "save-image":
+            raise ValueError("gpu save-image 仅支持 --backend chenyu")
+        if any(getattr(args, name, None) for name in ("image_uuid", "pod_uuid", "pod_tag", "clear_missing", "shutdown_only")):
+            raise ValueError("该 GPU 选项仅支持 --backend chenyu")
+        check_daemon_identity(client, config)
+        if action == "status":
+            state = client.state()
+            return {name: state.get(name) for name in ("colab", "tunnel", "remote", "idle")}, 0
+        body = {key: getattr(args, key) for key in (
+            "session", "gpu", "setup", "setup_params", "max_runtime_minutes", "idle_minutes", "high_mem", "approve_digest",
+        ) if getattr(args, key, None) is not None}
+        if action == "up":
+            body["connect"] = not args.no_connect
+        status, response = client._request_json("POST", "/api/local/gpu/" + action, payload=body, timeout=180)
+        exit_code = response.get("exit_code")
+        if status >= 400:
+            return response, exit_code if exit_code in (1, 2, 3) else (3 if status == 409 else 1)
+        return response, 2 if response.get("status") == "warn" else 0
+    from .chenyu_gpu import ChenyuGpuManager
+
+    if args.host is not None or args.port is not None or getattr(args, "high_mem", None) is not None:
+        raise ValueError("守护进程地址和 --high-mem 仅支持 --backend colab")
+    manager = ChenyuGpuManager(config=config)
+    if action == "status":
+        return manager.gpu_status(), 0
+    if action == "reconcile":
+        result = manager.gpu_reconcile(args.session, clear_missing=args.clear_missing)
+        return result, 3 if result.get("status") == "block" else 0
+    if action == "stop":
+        return manager.gpu_stop(args.session, shutdown_only=args.shutdown_only), 0
+    if action == "save-image":
+        return manager.gpu_save_image(args.session, approve_digest=args.approve_digest), 0
+    options = {field: getattr(args, field) for field in (
+        "session", "gpu", "setup", "setup_params", "image_uuid", "pod_uuid", "pod_tag",
+        "max_runtime_minutes", "idle_minutes",
+    ) if getattr(args, field) is not None}
+    if action == "up":
+        return manager.gpu_up(approve_digest=args.approve_digest, connect=not args.no_connect, **options), 0
+    result = manager.gpu_plan(**options)
+    return result, {"block": 3, "warn": 2}.get(result.get("status"), 0)
+
+
+def _ledger(args, config):
+    if args.ledger_action == "summary":
+        return ledger.summarize_usage(config=config, provider=args.provider, project=args.tag,
+                                     since=args.since, account_fp=args.account_fp), 0
+    if args.ledger_action == "record":
+        return ledger.record_usage(
+            config=config, provider=args.provider, record_type=args.record_type, action=args.action,
+            quantity=args.quantity, unit=args.unit, estimated=args.estimated, idempotency_key=args.idempotency_key,
+            project=args.tag, note=args.note, account_fp=args.account_fp, est_cny=args.est_cny,
+        ), 0
+    if args.balance_action == "show":
+        return ledger.reconcile_balances(config=config, provider=args.provider, account_fp=args.account_fp), 0
+    if args.balance_action == "set":
+        amount = args.balance
+        parts = {}
+        if args.cash_balance is not None or args.card_balance is not None:
+            if ledger.wallet_owner(args.provider) != "chenyu" or args.unit != "CNY":
+                raise ValueError("双钱包分项仅适用于晨羽 CNY")
+            parts = ledger.parse_chenyu_balance({"balance": args.cash_balance, "card_balance": args.card_balance})
+            if amount is not None and not math.isclose(parts["balance"], amount):
+                raise ValueError("--balance 须等于两个钱包余额的合计")
+            amount = parts.pop("balance")
+        if amount is None:
+            raise ValueError("请提供 --balance 或两个晨羽钱包余额")
+        return ledger.set_balance(config=config, provider=args.provider, unit=args.unit, balance=amount,
+                                  note=args.note, account_fp=args.account_fp, **parts), 0
+    probe = registry.probe_provider(args.provider, config, remote=True)
+    if not probe.available:
+        raise ProviderError(probe.details.get("detail") or "余额查询失败", code=probe.reason, exit_code=3)
+    details = dict(probe.details)
+    if args.provider == "chenyu":
+        balance = {key: details[key] for key in ("balance", "cash_balance", "card_balance")}
+        unit = "CNY"
+    else:
+        points = details.get("remainPoint", details.get("remainCoins"))
+        if points is None:
+            raise ProviderError("RunningHub 未返回积分余额", code="account_status_failed")
+        balance, unit = {"balance": points}, "point"
+    return ledger.set_balance(config=config, provider=args.provider, unit=unit, source="api",
+                              account_fp=details["account_fp"], **balance), 0
+
+
+def _dispatch(args, config):
+    if args.command == "providers":
+        if args.probe or args.remote:
+            return [registry.probe_provider(name, config, remote=args.remote).to_dict()
+                    for name in registry.PROVIDER_ORDER], 0
+        return [{"provider_id": name, "capabilities": ["video"],
+                 "platform_supported": name != "colab-comfy" or sys.platform != "win32"}
+                for name in registry.PROVIDER_ORDER], 0
+    handlers = {"doctor": _doctor, "workflows": _workflows, "preflight": _generation, "gen": _generation,
+                "jobs": _jobs, "gpu": _gpu, "daemon": _daemon, "ledger": _ledger}
+    return handlers[args.command](args, config)
+
+
+def main(argv=None):
+    args = None
+    config = None
+    try:
+        args = _parser().parse_args(argv)
+        if args.command == "init":
+            result, code = _init(args), 0
+        else:
+            config = load_config(env_file=args.env_file, data_dir=args.data_dir)
+            result, code = _dispatch(args, config)
+        _emit(result, args, config)
+        return code
+    except KeyboardInterrupt:
+        _print("操作已中断", file=sys.stderr)
+        return 1
+    except (ProviderError, TaskStoreError, ValueError, OSError, http.client.HTTPException, RuntimeError) as exc:
+        code = getattr(exc, "exit_code", 3 if isinstance(exc, TaskConflictError) else 1)
+        message = str(exc)
+        error = {"error": getattr(exc, "code", "command_error"), "message": message, "exit_code": code}
+        if isinstance(exc, ProviderError):
+            error.update(exc.details)
+            if preflight := error.get("preflight"):
+                preflight["approve_digest"] = preflight.get("digest") or None
+        if config:
+            error = config.redact(error)
+        if (args is not None and getattr(args, "json", False)) or (args is None and "--json" in (argv or sys.argv[1:])):
+            _print(json.dumps(error, ensure_ascii=True, allow_nan=False), file=sys.stderr)
+        else:
+            _print(error["message"], file=sys.stderr)
+            if "preflight" in error:
+                _print(json.dumps(error["preflight"], ensure_ascii=False, indent=2), file=sys.stderr)
+        return code
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

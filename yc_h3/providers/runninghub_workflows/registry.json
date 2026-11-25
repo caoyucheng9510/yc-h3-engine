@@ -1,0 +1,203 @@
+{
+  "default": "jinyu-hybrid",
+  "workflows": {
+    "jinyu-hybrid": {
+      "workflow_id": null,
+      "graph_file": "jinyu-hybrid.json",
+      "prompt_mode": "ref2va",
+      "tasks": [
+        "r2v",
+        "t2v"
+      ],
+      "instance_type": "plus",
+      "description": "金鱼文戏 MiniMax H3 SelfLift（参考图、音频、视频）",
+      "default_aspect": "16:9",
+      "sizes": {
+        "16:9": [
+          1664,
+          928
+        ],
+        "9:16": [
+          928,
+          1664
+        ],
+        "1:1": [
+          1248,
+          1248
+        ]
+      },
+      "max_edge": 1664,
+      "max_pixels": 1572864,
+      "min_seconds": 0.2,
+      "max_seconds": 15.0,
+      "default_steps": 12,
+      "min_steps": 7,
+      "default_seed": -1,
+      "run_seconds_per_output_second": 37,
+      "reference_coins_per_run_second": 0.23,
+      "estimate_calibrated_for_point": true,
+      "nodes": {
+        "prompt": {
+          "id": "263",
+          "class_type": "Text",
+          "input": "text"
+        },
+        "length": {
+          "id": "259",
+          "class_type": "PrimitiveFloat",
+          "input": "value"
+        },
+        "steps": {
+          "id": "261",
+          "class_type": "BasicScheduler",
+          "input": "steps"
+        },
+        "seed": {
+          "id": "397",
+          "class_type": "SelfLiftH3Sampler",
+          "input": "seed"
+        },
+        "selflift": {
+          "id": "397",
+          "class_type": "SelfLiftH3Sampler",
+          "transition_step_input": "transition_step"
+        },
+        "size": {
+          "id": "265",
+          "class_type": "MiniMaxH3ReferenceToVideo",
+          "width_input": "width",
+          "height_input": "height"
+        },
+        "target_node": "265",
+        "images": {
+          "ids": [
+            "51",
+            "49",
+            "50",
+            "43",
+            "19",
+            "23"
+          ],
+          "class_type": "LoadImage",
+          "input": "image"
+        },
+        "audios": {
+          "ids": [
+            "48",
+            "14",
+            "15"
+          ],
+          "class_type": "LoadAudio",
+          "input": "audio"
+        },
+        "videos": {
+          "ids": [
+            "27"
+          ],
+          "class_type": "VHS_LoadVideo",
+          "input": "video",
+          "audio_output_index": 2
+        }
+      }
+    },
+    "jinyu-combat": {
+      "workflow_id": null,
+      "graph_file": "jinyu-combat.json",
+      "prompt_mode": "ref2va",
+      "tasks": [
+        "r2v",
+        "t2v"
+      ],
+      "instance_type": "plus",
+      "description": "金鱼武打 MiniMax H3 SelfLift（参考图、音频、视频）",
+      "default_aspect": "16:9",
+      "sizes": {
+        "16:9": [
+          1664,
+          928
+        ],
+        "9:16": [
+          928,
+          1664
+        ],
+        "1:1": [
+          1248,
+          1248
+        ]
+      },
+      "max_edge": 1664,
+      "max_pixels": 1572864,
+      "min_seconds": 0.2,
+      "max_seconds": 15.0,
+      "default_steps": 12,
+      "min_steps": 7,
+      "default_seed": -1,
+      "run_seconds_per_output_second": 37,
+      "reference_coins_per_run_second": 0.23,
+      "estimate_calibrated_for_point": true,
+      "nodes": {
+        "prompt": {
+          "id": "263",
+          "class_type": "Text",
+          "input": "text"
+        },
+        "length": {
+          "id": "259",
+          "class_type": "PrimitiveFloat",
+          "input": "value"
+        },
+        "steps": {
+          "id": "261",
+          "class_type": "BasicScheduler",
+          "input": "steps"
+        },
+        "seed": {
+          "id": "397",
+          "class_type": "SelfLiftH3Sampler",
+          "input": "seed"
+        },
+        "selflift": {
+          "id": "397",
+          "class_type": "SelfLiftH3Sampler",
+          "transition_step_input": "transition_step"
+        },
+        "size": {
+          "id": "265",
+          "class_type": "MiniMaxH3ReferenceToVideo",
+          "width_input": "width",
+          "height_input": "height"
+        },
+        "target_node": "265",
+        "images": {
+          "ids": [
+            "51",
+            "49",
+            "50",
+            "43",
+            "19",
+            "23"
+          ],
+          "class_type": "LoadImage",
+          "input": "image"
+        },
+        "audios": {
+          "ids": [
+            "48",
+            "14",
+            "15"
+          ],
+          "class_type": "LoadAudio",
+          "input": "audio"
+        },
+        "videos": {
+          "ids": [
+            "27"
+          ],
+          "class_type": "VHS_LoadVideo",
+          "input": "video",
+          "audio_output_index": 2
+        }
+      }
+    }
+  }
+}

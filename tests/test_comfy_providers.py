@@ -1,0 +1,265 @@
+"""Offline tests for the shared managed generation and delivery paths."""
+from __future__ import annotations
+
+import copy
+import json
+from dataclasses import replace
+from pathlib import Path
+
+import pytest
+
+from yc_h3.config import credential_fingerprint
+from yc_h3.fsutil import sha256_bytes
+from yc_h3.providers import video_common
+from yc_h3.providers.base import ApprovalRequiredError, ArtifactContractError, GenerationRequest, ProviderConflictError
+from yc_h3.providers.chenyu_comfy import ChenyuComfyProvider
+from yc_h3.providers.colab_comfy import ColabComfyProvider
+from yc_h3.tasks_store import TaskStore, delivery_confirmed
+from tests.test_runninghub_provider import TEXT_PROMPT, make_config, render_clip
+
+
+class Daemon:
+    def __init__(self, config, data=b"", *, chenyu=False):
+        self.config = config
+        self.data = data
+        self.chenyu = chenyu
+        self.origin = "https://instance.example.test" if chenyu else "http://127.0.0.1:7798"
+        self.port = 7798
+        self.session = "yh3-offline"
+        self.vm = "fake-vm"
+        self.instance = "remote-process"
+        self.rate = 4.0
+        self.jobs = {}
+        self.calls = []
+        self.submit_calls = []
+        self.drop = False
+        self.hide_index = False
+
+    def health(self):
+        self.calls.append("health")
+        return {"app": "yc-h3-engine", "ok": True, "data_dir_hash": self.config.data_dir_hash,
+                "config_identity": self.config.config_identity}
+
+    def state(self):
+        self.calls.append("state")
+        remote = {"instance_id": self.instance}
+        if self.chenyu:
+            remote["platform_instance_id"] = self.vm
+        return {"tunnel": {"session": self.session}, "remote": remote,
+                "settings": {"managed_sessions": {self.session: {"host": self.vm}}}}
+
+    def preflight(self, payload):
+        self.calls.append("preflight")
+        return 200, {"status": "pass", "instance_id": self.instance, "preflight_digest": "4" * 64,
+                     "managed_instance_id": self.vm if self.chenyu else None,
+                     "submission_preflight": "private-handle" if payload.get("for_submission") else None,
+                     "billing_context": {"session_name": self.session, "vm_host": self.vm,
+                                         "billing_rate": self.rate, "endpoint_origin": self.origin}}
+
+    def submit_job(self, payload):
+        self.submit_calls.append(copy.deepcopy(payload))
+        request_id = payload["client_request_id"]
+        previous = next((job_id for job_id, row in self.jobs.items() if row["client_request_id"] == request_id), None)
+        if previous:
+            return 200, {"job_id": previous}
+        job_id = f"offjob-{len(self.jobs) + 1}"
+        self.jobs[job_id] = {
+            "id": job_id, "client_request_id": request_id, "status": "done", "params": copy.deepcopy(payload["params"]),
+            "started": 10, "finished": 20,
+            "outputs": [{"path": f"/jobs/{job_id}/clip.mp4", "sha256": sha256_bytes(self.data)}],
+        }
+        if self.drop:
+            self.drop = False
+            raise ConnectionResetError("lost response after accepting")
+        return 200, {"job_id": job_id}
+
+    def list_jobs(self):
+        return [] if self.hide_index else list(self.jobs.values())
+
+    def get_job(self, job_id):
+        return self.jobs[job_id]
+
+    def download_file(self, remote_path, path):
+        path.write_bytes(self.data)
+
+    def archive_perf(self, job_id):
+        return {"archived": True}
+
+
+def request_at(tmp_path, **options):
+    return GenerationRequest("video", prompt=TEXT_PROMPT, output_path=tmp_path / "out.mp4", **{
+        "params": {"width": 320, "height": 192, "seconds": 0.5}, **options,
+    })
+
+
+def test_pass_requires_approval_and_checks_strict_decode(tmp_path, monkeypatch, render_clip):
+    config = make_config(tmp_path, monkeypatch)
+    daemon = Daemon(config, render_clip(320, 192, 22))
+    provider = ColabComfyProvider(client=daemon, config=config)
+    request = request_at(tmp_path)
+    approval = provider.preflight(request)
+    assert approval.status == "pass", approval.signals
+    assert not config.data_dir.exists()
+    with pytest.raises(ApprovalRequiredError):
+        provider.generate(request)
+    assert not daemon.submit_calls
+    request.approve_digest = approval.digest
+    daemon.rate = 5.0
+    with pytest.raises(ApprovalRequiredError):
+        provider.generate(request)
+    daemon.rate = 4.0
+    commands = []
+    strict = video_common.default_ffmpeg
+
+    def record_command(args):
+        commands.append(args)
+        strict(args)
+
+    monkeypatch.setattr(video_common, "default_ffmpeg", record_command)
+    result = provider.generate(request)
+    assert result.artifact_path == str(request.output_path)
+    assert commands[0][:4] == ["-v", "error", "-xerror", "-i"]
+    assert commands[0][5:] == ["-map", "0:v:0", "-map", "0:a:0", "-f", "null", "-"]
+    assert result.perf_archived is True
+    assert "private-handle" not in TaskStore(config=config).task_path(result.task_key).read_text()
+
+
+def test_decode_failure_keeps_final_path_and_fetch_can_retry(tmp_path, monkeypatch, render_clip):
+    config = make_config(tmp_path, monkeypatch)
+    daemon = Daemon(config, render_clip(320, 192, 22))
+    provider = ColabComfyProvider(client=daemon, config=config)
+    store = TaskStore(config=config)
+    request = request_at(tmp_path)
+    plan = provider.preflight(request, store=store)
+    assert plan.status == "pass", plan.signals
+    request.approve_digest = plan.digest
+    old_decode = video_common.default_ffmpeg
+
+    def fail_decode(args):
+        assert "-xerror" in args
+        raise ArtifactContractError("simulated decoder rejects corrupt frames")
+
+    monkeypatch.setattr(video_common, "default_ffmpeg", fail_decode)
+    with pytest.raises(ArtifactContractError, match="双流严格解码"):
+        provider.generate(request, store=store)
+    assert not request.output_path.exists()
+    record = store.get(plan.facts["task_key"])
+    assert record["state"] == "submitted" and record["reserved_output_path"] is None
+    monkeypatch.setattr(video_common, "default_ffmpeg", old_decode)
+    result = provider.fetch(record["task_key"], store=store, output_path=tmp_path / "retrieved.mp4")
+    assert result.state == "delivered"
+    assert Path(result.artifact_path).is_file()
+
+
+def test_ambiguous_force_new_replays_original_request_id_only_on_same_instance(tmp_path, monkeypatch, render_clip):
+    config = make_config(tmp_path, monkeypatch)
+    daemon = Daemon(config, render_clip(320, 192, 22))
+    daemon.drop = daemon.hide_index = True
+    provider = ColabComfyProvider(client=daemon, config=config)
+    store = TaskStore(config=config)
+    request = request_at(tmp_path, force_new=True)
+    plan = provider.preflight(request, store=store)
+    request.approve_digest = plan.digest
+    with pytest.raises(ProviderConflictError, match="提交结果不明"):
+        provider.generate(request, store=store)
+    task_key = plan.facts["task_key"]
+    assert store.get(task_key)["state"] == "ambiguous"
+    with pytest.raises(ProviderConflictError, match="审批已消费"):
+        provider.generate(request, store=store)
+    daemon.instance = "different-remote-process"
+    with pytest.raises(ProviderConflictError, match="GPU 会话"):
+        provider.resume(task_key, store=store)
+    assert len(daemon.submit_calls) == 1
+    daemon.instance = "remote-process"
+    result = provider.resume(task_key, store=store)
+    assert result.artifact_path == str(request.output_path)
+    assert len(daemon.jobs) == 1 and len(daemon.submit_calls) == 2
+    assert "submission_preflight" not in daemon.submit_calls[1]
+    assert {key: val for key, val in daemon.submit_calls[0].items() if key != "submission_preflight"} == daemon.submit_calls[1]
+
+
+def test_chenyu_fetches_historical_job_and_preserves_multiple_proofs(tmp_path, monkeypatch, render_clip):
+    config = make_config(tmp_path, monkeypatch, CHENYU_API_KEY="chenyu-fake-key")
+    daemon = Daemon(config, render_clip(320, 192, 22), chenyu=True)
+    provider = ChenyuComfyProvider(client=daemon, config=config)
+    store = TaskStore(config=config)
+    request = request_at(tmp_path, metadata={"tag": "clip"})
+    plan = provider.preflight(request, store=store)
+    assert plan.status == "pass", plan.signals
+    request.approve_digest = plan.digest
+    first = provider.generate(request, store=store)
+    Path(first.artifact_path).unlink()
+    second_request = replace(request, force_new=True)
+    second_request.approve_digest = provider.preflight(second_request, store=store).digest
+    second = provider.generate(second_request, store=store)
+    recovered = provider.fetch(second.task_key, store=store, output_path=tmp_path / "historical.mp4",
+                               remote_job_id=first.remote_id)
+    assert recovered.remote_id == first.remote_id
+    assert recovered.artifact_path == str(tmp_path / "historical.mp4")
+    current = store.get(second.task_key)
+    assert current["remote_job_id"] == second.remote_id
+    proofs = store.list_job_history(provider="chenyu-comfy", instance_uuid=daemon.vm)
+    assert len(proofs) == 2 and all(delivery_confirmed(row) for row in proofs)
+    lines = (config.data_dir / "ledger" / "usage.jsonl").read_text().splitlines()
+    for entry in map(json.loads, lines):
+        assert entry["provider"] == "chenyu-comfy" and entry["wallet_owner"] == "chenyu"
+        assert entry["account_fp"] == credential_fingerprint(config.get("CHENYU_API_KEY"))
+    assert len(lines) == 2
+
+
+def test_colab_daemon_config_identity_conflict_stops_before_request(tmp_path, monkeypatch):
+    config = make_config(tmp_path, monkeypatch)
+    wrong = replace(config, config_identity="other-config")
+    daemon = Daemon(wrong)
+    provider = ColabComfyProvider(client=daemon, config=config)
+    result = provider.preflight(request_at(tmp_path))
+    assert result.status == "block"
+    assert result.signals[0]["code"] == "daemon_identity_conflict"
+    assert daemon.calls == ["health"]
+
+
+def test_uploaded_reference_produces_same_remote_approval_as_preview(tmp_path, monkeypatch, render_clip):
+    from PIL import Image
+    from yc_h3.remote import preflight as remote_preflight
+    from yc_h3.remote.workflows.minimax_h3 import registry as remote_registry
+    from tests.test_runninghub_provider import IMAGE_PROMPT
+
+    config = make_config(tmp_path, monkeypatch)
+    source = tmp_path / "local.png"
+    Image.new("RGB", (32, 32)).save(source)
+    remote_inputs = tmp_path / "remote-uploads"
+    remote_inputs.mkdir()
+    monkeypatch.setattr(remote_preflight.comfy_assets, "weight_ready", lambda *_: True)
+
+    class RemoteDaemon(Daemon):
+        def review(self, payload):
+            return remote_preflight.evaluate_preflight(
+                instance_id=self.instance, profile=remote_registry.resolve_hardware_profile(96, 96, "A100-SXM4-80GB"),
+                model={"id": "minimax-h3"}, workflow=remote_registry.get_workflow("jinyu-hybrid"),
+                task=payload["task"], params=payload["params"], input_facts=payload.get("input_facts"),
+                input_root=remote_inputs, read_assets=dict, check_runtime=False,
+                billing_context={"provider_id": "colab-comfy", "session_name": self.session, "vm_host": self.vm,
+                                 "billing_rate": self.rate, "endpoint_origin": self.origin},
+            )[0]
+
+        def preflight(self, payload):
+            result = self.review(payload)
+            return (409 if result["status"] == "block" else 200), result
+
+        def upload(self, filename, data):
+            path = remote_inputs / filename
+            path.write_bytes(data)
+            return {"remote_path": str(path)}
+
+        def submit_job(self, payload):
+            assert self.review(payload)["preflight_digest"] == payload["approve_digest"]
+            return super().submit_job(payload)
+
+    client = RemoteDaemon(config, render_clip(320, 192, 22))
+    provider = ColabComfyProvider(client=client, config=config)
+    request = replace(request_at(tmp_path), prompt=IMAGE_PROMPT, inputs={"images": [source]})
+    plan = provider.preflight(request)
+    assert plan.status in ("pass", "warn"), plan.signals
+    assert plan.input_hashes == {"images.0": sha256_bytes(source.read_bytes())}
+    result = provider.generate(replace(request, approve_digest=plan.digest))
+    assert result.state == "delivered"
