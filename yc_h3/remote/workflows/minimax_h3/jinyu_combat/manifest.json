@@ -1,0 +1,148 @@
+{
+  "id": "jinyu-combat",
+  "steps": 12,
+  "required_nodes": [
+    "BlockSparseAttention",
+    "CLIPLoader",
+    "CreateVideo",
+    "ModelAttentionBackend",
+    "SaveVideo",
+    "UNETLoader",
+    "VAEDecodeAudio",
+    "VAEDecode",
+    "VAELoader",
+    "MiniMaxH3ReferenceToVideo",
+    "LoadVideo",
+    "GetVideoComponents"
+  ],
+  "plugin_nodes": {
+    "ComfyUI-KJNodes": "MiniMaxChunkFeedForward",
+    "comfyui-SelfLift": "SelfLiftH3Sampler"
+  },
+  "profile_id": "comfy-main",
+  "comfyui_revision": "c59e67bd5a2757ddba1c6c6a993c0b6c811b54da",
+  "output_kind": "video",
+  "tasks": [
+    "t2v",
+    "i2v",
+    "r2v"
+  ],
+  "verification": {
+    "G4-96": "unverified",
+    "H100-80": "unverified",
+    "A100-80": "verified",
+    "A100-40": "unverified",
+    "L4-24": "unverified",
+    "T4-16": "unverified"
+  },
+  "weights": [
+    {
+      "id": "hybrid_b25_49",
+      "repo": "smhfacct/Minimax-H3-fl2va-ref2va-hybrid-models",
+      "revision": "6328c7dc34369783dd6a224b366aeb698e552e19",
+      "repo_path": "minimax_h3_hybrid_fl2va_ref2va_b25-49-int8.safetensors",
+      "comfy_rel_path": "diffusion_models/minimax_h3_hybrid_fl2va_ref2va_b25-49-int8.safetensors",
+      "size_bytes": 20970379632,
+      "sha256": "a629cfea8d89a071b140c6e1935dc9a23e72de6badc18975a2bb9e6d1423d76d"
+    },
+    {
+      "id": "text_enc_nvfp4",
+      "repo": "Comfy-Org/MiniMax-H3",
+      "revision": "4b53a35191437de05370da548e59aeabe2a5a09a",
+      "repo_path": "text_encoders/qwen3vl_32b_minimax_h3_nvfp4_awq.safetensors",
+      "comfy_rel_path": "text_encoders/qwen3vl_32b_minimax_h3_nvfp4_awq.safetensors",
+      "size_bytes": 15687142551,
+      "sha256": "35a88d51044231fe332301d7a62aa81e3f2cba62febeb446e2c1e3e0ef76f2c6"
+    },
+    {
+      "id": "video_vae_int8",
+      "repo": "Comfy-Org/MiniMax-H3",
+      "revision": "4b53a35191437de05370da548e59aeabe2a5a09a",
+      "repo_path": "vae/minimax_h3_video_vae_int8_convrot.safetensors",
+      "comfy_rel_path": "vae/minimax_h3_video_vae_int8_convrot.safetensors",
+      "size_bytes": 2811065184,
+      "sha256": "52a2c8c73583c86e4f41cdcce3a6ad0ea562987bc0bf3d60a0cef5f5c8e60c0e"
+    },
+    {
+      "id": "audio_vae_fp32",
+      "repo": "Comfy-Org/MiniMax-H3",
+      "revision": "4b53a35191437de05370da548e59aeabe2a5a09a",
+      "repo_path": "vae/minimax_h3_audio_vae_fp32.safetensors",
+      "comfy_rel_path": "vae/minimax_h3_audio_vae_fp32.safetensors",
+      "size_bytes": 605254808,
+      "sha256": "8e505d95dd1561d47abd43d4238fd40d9bb1ae9e147ed0a4cba778d76ae4db48"
+    },
+    {
+      "id": "lora_dmad",
+      "repo": "dseditor/minimax-h3-studio-assets",
+      "revision": "1feae43759ca3af96d528a4312c48665d9f88811",
+      "repo_path": "loras/minimax_h3_dmad_full_dareties_v4_step600_comfy_fro.safetensors",
+      "comfy_rel_path": "loras/minimax_h3_dmad_full_dareties_v4_step600_comfy_fro.safetensors",
+      "size_bytes": 956743688,
+      "sha256": "4d4ea608992d72303e4971f78728f587f43ecb72490f365a042ed82e37a907ce"
+    },
+    {
+      "id": "lora_mystic_v1",
+      "repo": "Serenak/chilloutmix",
+      "revision": "bf59136a58a02a858cd154ad37ea20a4447e9004",
+      "repo_path": "MysticXXX_MMH3-V1.safetensors",
+      "comfy_rel_path": "loras/MysticXXX_MMH3-V1.safetensors",
+      "size_bytes": 596451528,
+      "sha256": "7dd837f4c5420d4ec59f3ff1757b3f9d264a6c0f120d65d9c4f59c77584dd0be"
+    },
+    {
+      "id": "selflift_lms",
+      "repo": "Alissonerdx/Minimax-H3-ComfyUI",
+      "revision": "5a2770de134c2f006790dddcb9ecaad3d88836f2",
+      "repo_path": "latent_upscaler/h3_upscaler_lms_v0.1.safetensors",
+      "comfy_rel_path": "latent_upscale_models/h3_upscaler_lms_v0.1.safetensors",
+      "size_bytes": 690593048,
+      "sha256": "40d4228227146245ef2b65480b647c50222465ca125de5880f192e3259e40d59"
+    },
+    {
+      "id": "combat_v2",
+      "repo": "JOKER141/MiniMax-H3-Combat-Base-V2",
+      "revision": "7b3c5b7157d66517f5bd8f5d3fa8fd2c66bc4d11",
+      "repo_path": "H3_Combat_V2.safetensors",
+      "comfy_rel_path": "loras/H3_Combat_V2.safetensors",
+      "size_bytes": 155110280,
+      "sha256": "5b3edb09e9d6029439badf9bc9db4ba4a355ae679b0810888de82c4793c0bac8"
+    },
+    {
+      "id": "fight_flow_v1",
+      "repo": "JOKER141/H3-Fight-Flow-Fight-Interaction-LoRA",
+      "revision": "da31fb85e3142c6ae0974002e6f880df6e6095c7",
+      "repo_path": "H3_Fight_Flow_V1.safetensors",
+      "comfy_rel_path": "loras/H3_Fight_Flow_V1.safetensors",
+      "size_bytes": 155110296,
+      "sha256": "579e8eca67b6d70f4db94b2db67cd938751d576ee3d72aba875dae3d911f7398"
+    },
+    {
+      "id": "motion_repair_v2",
+      "repo": "JOKER141/MiniMax-H3-General-Motion-Continuity-Repair",
+      "revision": "1676b352bb9f62407f76aee2ad55db2f36d04471",
+      "repo_path": "Motion_Repair_V2.safetensors",
+      "comfy_rel_path": "loras/Motion_Repair_V2.safetensors",
+      "size_bytes": 155110272,
+      "sha256": "edfa0e2858caeba7be9108883f61da8525d3c58af998c94ac7a449d9603d7574"
+    },
+    {
+      "id": "speed_slider",
+      "repo": "dseditor/minimax-h3-studio-assets",
+      "revision": "1feae43759ca3af96d528a4312c48665d9f88811",
+      "repo_path": "loras/H3_SPEED_slider.safetensors",
+      "comfy_rel_path": "loras/H3_SPEED_slider.safetensors",
+      "size_bytes": 149166648,
+      "sha256": "381a6b14c126e891d6bcc823852881c8376b85df12651cac1f0beca0780b7f8e"
+    },
+    {
+      "id": "heretic",
+      "repo": "RunningHubAI/rh-lsfqwen3vl-32b-minimax-h3-ultra-uncensored-heretic-int8-convrot.safetensors-checkpoint",
+      "revision": "e022b72e40926c24826421f06f1ce56a92b3c194",
+      "repo_path": "qwen3vl_32b_minimax_h3_ultra_uncensored_heretic_int8_convrot.safetensors",
+      "comfy_rel_path": "text_encoders/qwen3vl_32b_minimax_h3_ultra_uncensored_heretic_int8_convrot.safetensors",
+      "size_bytes": 27141342152,
+      "sha256": "bc2ced0fbea64757fa9acddccfc0b3f4819d1dcf1da6c124d690d368be283923"
+    }
+  ]
+}
