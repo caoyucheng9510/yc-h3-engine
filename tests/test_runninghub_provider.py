@@ -4,14 +4,17 @@ from __future__ import annotations
 import io
 import json
 import subprocess
+import time
 import urllib.parse
 from dataclasses import replace
 from email.message import Message
+from types import SimpleNamespace
 
 import pytest
 
 from yc_h3.config import load_config
 from yc_h3.ledger import summarize_usage
+from yc_h3.perf_history import load_observations
 from yc_h3.providers.base import ApprovalRequiredError, GenerationRequest, ProviderConflictError
 from yc_h3.providers.runninghub import RunningHubProvider
 from yc_h3.providers.runninghub_workflows.catalog import load_and_verify_graph, load_registry
@@ -160,6 +163,55 @@ def test_digest_binds_destination_account_rate_state_and_input_bytes(tmp_path, m
     assert not config.data_dir.exists()
 
 
+def test_portrait_delivery_calibrates_runninghub_quotes_and_preserves_checkpoint_reuse(tmp_path, monkeypatch, render_clip):
+    config = runninghub_config(tmp_path, monkeypatch)
+
+    def output(_):
+        clock.time = lambda: 1080.0
+        return {"code": 0, "data": [{"fileType": "mp4", "fileUrl": MEDIA_URL,
+                                     "taskCostTime": "50", "chargedPoint": "4.2"}]}
+
+    clock = SimpleNamespace(time=lambda: 1000.0, monotonic=time.monotonic)
+    monkeypatch.setattr("yc_h3.providers.runninghub.time", clock)
+    transport = Transport(create=[{"code": 0, "data": {"taskId": "portrait-offline"}}], outputs=[output])
+    provider = RunningHubProvider(config=config, auth_opener=transport,
+                                  download_opener=Transport(**{"output.mp4": [render_clip(928, 1664, 22)]}))
+    baseline = GenerationRequest("video", prompt=TEXT_PROMPT, output_path=tmp_path / "wide.mp4")
+    quote = provider.preflight(baseline)
+    assert quote.facts["estimate_source"] == "initial_baseline"
+    assert quote.facts["estimate_samples"] == 0
+    assert quote.facts["estimated_run_seconds"] == 185
+    assert quote.facts["estimated_reference_points"] == round(185 * 0.23, 1)
+    assert quote.facts["estimated_wall_seconds"] is None
+
+    request = replace(baseline, output_path=tmp_path / "portrait.mp4",
+                      params={"aspect": "9:16", "seconds": 0.5, "steps": 8})
+    approval = provider.preflight(request)
+    assert approval.status == "warn", approval.signals
+    assert approval.facts["estimate_source"] == "uncalibrated"
+    assert not config.data_dir.exists()
+    result = provider.generate(replace(request, approve_digest=approval.digest))
+    assert result.state == "delivered"
+    rows = load_observations(config, provider="runninghub")
+    assert len(rows) == 1
+    assert rows[0]["width"] == 928 and rows[0]["height"] == 1664
+    assert rows[0]["wall_seconds"] == 80 and rows[0]["estimated_billing"] is False
+
+    next_request = replace(request, output_path=tmp_path / "longer.mp4", params={**request.params, "seconds": 1.5})
+    facts = provider.preflight(next_request).facts
+    assert facts["estimate_source"] == "local_history" and facts["estimate_samples"] == 1
+    assert facts["estimated_run_seconds"] == 150.0 and facts["estimated_wall_seconds"] == 240.0
+    assert facts["estimate_calibrated_for_point"] is True
+    assert facts["estimated_reference_points"] == 12.6 and facts["estimated_cny"] == 1.386
+    assert "本地 1 条" in facts["estimate_note"] and "chargedPoint" in facts["estimate_note"]
+
+    refreshed = provider.preflight(request)
+    assert refreshed.digest != approval.digest
+    assert provider.generate(replace(request, approve_digest=refreshed.digest)).recovered
+    assert len(transport.calls("create")) == 1
+    assert load_observations(config) == rows
+
+
 def test_fetch_claimed_job_and_recover_to_another_destination(tmp_path, monkeypatch, render_clip):
     config = runninghub_config(tmp_path, monkeypatch)
     transport = Transport(create=[ConnectionResetError()], outputs=[{"code": 0, "data": [
@@ -175,12 +227,20 @@ def test_fetch_claimed_job_and_recover_to_another_destination(tmp_path, monkeypa
     plan = provider.preflight(request, store=store)
     with pytest.raises(ProviderConflictError):
         provider.generate(replace(request, approve_digest=plan.digest), store=store)
-    result = provider.fetch(plan.facts["task_key"], store=store, remote_job_id="run-offline", output_path=new)
+    def unavailable(*args, **kwargs):
+        raise PermissionError("simulated observation write failure")
+
+    with monkeypatch.context() as patch:
+        patch.setattr("yc_h3.perf_history.record_observation", unavailable)
+        result = provider.fetch(plan.facts["task_key"], store=store, remote_job_id="run-offline", output_path=new)
+    assert load_observations(config) == []
     assert result.artifact_path == str(tmp_path / "new_v2.mp4")
     assert new.read_bytes() == b"existing user artifact"
     assert not old.exists()
     again = provider.resume(result.task_key, store=store, output_path=old)
     assert again.artifact_path == str(old)
+    observation, = load_observations(config)
+    assert observation["wall_seconds"] > 0
     summary = summarize_usage(config=config, project="test-shot", account_fp=plan.target_identity["credential_fingerprint"])
     assert summary["jobs"][0]["quantity"] == 1.25
     assert summary["jobs"][0]["count"] == 1

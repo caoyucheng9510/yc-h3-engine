@@ -15,12 +15,13 @@ import uuid
 import urllib.error
 import urllib.parse
 import urllib.request
-from contextlib import ExitStack
+from contextlib import ExitStack, suppress
 from datetime import datetime, timezone
 from fractions import Fraction
 from pathlib import Path
 from typing import Any, Callable
 
+from .. import perf_history
 from ..config import EngineConfig, credential_fingerprint, load_config
 from ..ledger import lookup_cny_rate
 from ..fsutil import ensure_real_path, redact_secrets
@@ -338,6 +339,10 @@ class RunningHubProvider(Provider):
                 audio_names=["None"] * len(media["audios"]), seconds=norm["seconds"],
                 aspect=aspect, size=(width, height), seed=norm["seed"], steps=norm["steps"], videos=video_specs,
             )
+            history = perf_history.estimate_from_history(
+                store.config, provider=self.provider_id, workflow=workflow, output_seconds=norm["seconds"],
+                has_ref_video=bool(video_specs), hardware=norm["instance_type"],
+            )
             calibrated = (
                 spec["estimate_calibrated_for_point"] and norm["steps"] == spec["default_steps"]
                 and norm["instance_type"] == spec["instance_type"] and (width, height) == tuple(spec["sizes"]["16:9"])
@@ -371,9 +376,30 @@ class RunningHubProvider(Provider):
                 round(estimated_points * rate, 4) if estimated_points is not None and rate is not None else None
             )
             facts["slots"] = caps
+            request_facts = facts.copy()
+            if history and (history["estimated_run_seconds"] is not None or history["estimated_quantity"] is not None):
+                estimated_seconds = history["estimated_run_seconds"]
+                estimated_points = history["estimated_quantity"]
+                reference_rate = spec.get("reference_coins_per_run_second")
+                if estimated_points is None and estimated_seconds is not None and reference_rate is not None:
+                    estimated_points = estimated_seconds * reference_rate
+                if estimated_points is not None:
+                    estimated_points = round(estimated_points, 1)
+                samples = history["samples"]
+                facts.update(
+                    estimated_run_seconds=estimated_seconds, estimated_wall_seconds=history["estimated_wall_seconds"],
+                    estimated_reference_points=estimated_points, estimate_calibrated_for_point=estimated_points is not None,
+                    estimated_cny=round(estimated_points * rate, 4) if estimated_points is not None and rate is not None else None,
+                    estimate_source="local_history", estimate_samples=samples,
+                    estimate_note=f"基于本地 {samples} 条历史实跑样本估算，最终以 chargedPoint 为准。",
+                )
+            else:
+                facts.update(estimate_source="initial_baseline" if calibrated else "uncalibrated",
+                             estimate_samples=0, estimated_wall_seconds=None)
             context = approval_context(
                 request, store, config=self.config, provider=self.provider_id, origin=origin,
                 fingerprint=fingerprint, workflow=workflow, params=norm, hashes=hashes, facts=facts, target=target,
+                request_facts=request_facts,
             )
         except (OSError, TypeError, ValueError, KeyError, AttributeError, ProviderError) as exc:
             return self._blocked("invalid_runninghub_request", _sanitize_secret(exc, key), origin), {}
@@ -540,6 +566,7 @@ class RunningHubProvider(Provider):
                             "tag": request.metadata.get("tag"), "approved_digest": preflight.digest,
                             "workflow": preflight.target_identity["workflow"],
                             "media_params": {name: value for name, value in ctx["norm"].items() if name != "prompt"},
+                            "has_ref_video": bool(ctx["video_by_slot"]),
                             "estimated_reference_points": preflight.facts["estimated_reference_points"],
                             "estimate_calibrated_for_point": preflight.facts["estimate_calibrated_for_point"],
                         },
@@ -790,11 +817,26 @@ class RunningHubProvider(Provider):
     def _delivered(self, store, record, *, recovered):
         self._record_charge(store, record)
         contract = dict(record["contract"])
-        if record["media_params"]["save_last_frame"]:
+        media = record["media_params"]
+        if media["save_last_frame"]:
             contract["last_frame_path"] = last_frame(store, record, contract)
+        billing = record.get("billing") or {}
+        has_ref_video = record.get("has_ref_video")
+        # Older r2v checkpoints cannot distinguish image or audio references from video.
+        if has_ref_video is not None or media.get("task") == "t2v":
+            with suppress(OSError, ValueError):
+                perf_history.record_observation(
+                    store.config, idempotency_key=f"{self.provider_id}:{record['remote_task_id']}",
+                    provider=self.provider_id, workflow=record["workflow"], hardware=media.get("instance_type"),
+                    width=media.get("width"), height=media.get("height"), output_seconds=media["seconds"],
+                    has_ref_video=bool(has_ref_video), run_seconds=billing.get("run_seconds") or None,
+                    wall_seconds=perf_history.elapsed_seconds(record.get("completed_at"), record.get("accepted_at"),
+                                                              record.get("first_create_requested_at")),
+                    billed_quantity=billing.get("points"), unit="point", estimated_billing=billing.get("estimated", True),
+                )
         return ArtifactResult(self.provider_id, record["task_key"], "delivered", artifact_path=record["artifact_path"],
                               artifact_sha256=record["artifact_sha256"], remote_id=record["remote_task_id"],
-                              recovered=recovered, contract=contract, billing=record.get("billing") or {})
+                              recovered=recovered, contract=contract, billing=billing)
 
 
 def _reference_video_spec(stream, audio, window):

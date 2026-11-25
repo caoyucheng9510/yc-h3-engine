@@ -12,11 +12,12 @@ import urllib.error
 import urllib.parse
 import urllib.request
 import uuid
-from contextlib import ExitStack, nullcontext
+from contextlib import ExitStack, nullcontext, suppress
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable
 
+from .. import perf_history
 from ..config import EngineConfig, credential_fingerprint, load_config
 from ..ledger import parse_chenyu_balance
 from ..fsutil import ensure_real_path, redact_secrets
@@ -138,7 +139,7 @@ class ChenyuProvider(Provider):
 
     def __init__(
         self, *, api_base: str | None = None, config: EngineConfig | None = None, auth_opener: Any = None, download_opener: Any = None,
-        poll_interval_sec: float = 5.0, timeout_sec: float = 2400.0, settlement_wait_sec: float = 20.0,
+        poll_interval_sec: float = 5.0, timeout_sec: float = 3600.0, settlement_wait_sec: float = 20.0,
         sleep_fn: Callable[[float], None] = time.sleep,
         max_concurrency: int | None = None, max_inflight: int | None = None, queue_timeout_sec: float = 180.0,
         slot_poll_interval_sec: float = 0.25, slot_wait_timeout_sec: float | None = None,
@@ -312,9 +313,36 @@ class ChenyuProvider(Provider):
                 "workflow_spec_sha256": sha256_bytes(canonical_json_bytes(spec)),
             }
             facts["slots"] = caps
+            request_facts = facts.copy()
+            history = perf_history.estimate_from_history(
+                store.config, provider=self.provider_id, workflow=workflow, output_seconds=seconds,
+                has_ref_video=False, hardware=spec["gpu_model"],
+            )
+            estimate_note = ""
+            if history:
+                run_seconds = history["estimated_run_seconds"]
+                wall_seconds = history["estimated_wall_seconds"]
+                amount = history["estimated_quantity"]
+                if run_seconds is not None:
+                    amount = (run_seconds / 60.0) * spec["compute_cny_per_minute"] + spec["creator_fee_cny"]
+                samples = history["samples"]
+                facts.update(estimated_run_seconds=run_seconds, estimated_wall_seconds=wall_seconds,
+                             estimated_cny=round(amount, 4) if amount is not None else None,
+                             estimate_source="local_history", estimate_samples=samples)
+                details = []
+                if run_seconds is not None:
+                    details.append(f"预计纯推理耗时 {run_seconds:.1f} 秒")
+                if wall_seconds is not None:
+                    details.append(f"近期端到端耗时中位数 {wall_seconds:.1f} 秒")
+                estimate_note = f" 基于 {samples} 条本地实跑样本"
+                estimate_note += ("，" + "，".join(details) if details else "") + "。"
+            else:
+                facts.update(estimated_run_seconds=None, estimated_wall_seconds=None, estimated_cny=None,
+                             estimate_source="uncalibrated", estimate_samples=0)
             context = approval_context(
                 request, store, config=self.config, provider=self.provider_id, origin=origin,
                 fingerprint=fingerprint, workflow=workflow, params=params, hashes=hashes, facts=facts, target=target,
+                request_facts=request_facts,
             )
         except (OSError, TypeError, ValueError, KeyError, AttributeError, ProviderError) as exc:
             return self._blocked("invalid_chenyu_request", redact_secrets(str(exc), key), origin), {}
@@ -322,7 +350,7 @@ class ChenyuProvider(Provider):
         signals = [{
             "severity": "warn", "code": PRICING_MODE,
             "detail": (f"{spec['gpu_model']} 算力 {spec['compute_cny_per_minute']:.2f} CNY/分钟（算力卡），"
-                       f"创作者费 {spec['creator_fee_cny']:.2f} CNY/次（现金余额），最终金额以结算为准。"),
+                       f"创作者费 {spec['creator_fee_cny']:.2f} CNY/次（现金余额），最终金额以结算为准。{estimate_note}"),
         }]
         signals.extend({"severity": "warn", "code": "h3_prompt_risk", "detail": self.config.redact(warning)}
                        for warning in warnings)
@@ -395,6 +423,7 @@ class ChenyuProvider(Provider):
                             extra={
                                 "chenyu_idempotency_key": str(uuid.uuid4()), "wanted_output_path": str(ctx["wanted"]),
                                 "workflow": preflight.target_identity["workflow"], "output_key": ctx["spec"]["output_key"],
+                                "gpu_model": ctx["spec"]["gpu_model"],
                                 "workflow_id": ctx["spec"]["workflow_id"], "revision_id": ctx["spec"]["revision_id"],
                                 "tag": request.metadata.get("tag"), "approved_digest": preflight.digest,
                                 "media_params": {name: value for name, value in ctx["params"].items() if name != "prompt"},
@@ -753,6 +782,17 @@ class ChenyuProvider(Provider):
         contract = dict(record["contract"])
         if record["media_params"]["save_last_frame"]:
             contract["last_frame_path"] = last_frame(store, record, contract)
+        billing = record.get("billing") or {}
+        with suppress(OSError, ValueError):
+            perf_history.record_observation(
+                store.config, idempotency_key=f"{self.provider_id}:{record['remote_task_id']}",
+                provider=self.provider_id, workflow=record["workflow"], hardware=record.get("gpu_model"),
+                width=contract.get("width"), height=contract.get("height"), output_seconds=record["media_params"]["seconds"],
+                run_seconds=record.get("platform_run_s") or None,
+                wall_seconds=perf_history.elapsed_seconds(record.get("completed_at"), record.get("submit_requested_at"),
+                                                          record.get("accepted_at")),
+                billed_quantity=billing.get("final_amount"), unit="CNY", estimated_billing=billing.get("estimated", True),
+            )
         return ArtifactResult(self.provider_id, record["task_key"], "delivered", artifact_path=record["artifact_path"],
                               artifact_sha256=record["artifact_sha256"], remote_id=record["remote_task_id"],
-                              recovered=recovered, contract=contract, billing=record.get("billing") or {})
+                              recovered=recovered, contract=contract, billing=billing)

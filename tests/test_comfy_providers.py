@@ -10,6 +10,7 @@ import pytest
 
 from yc_h3.config import credential_fingerprint
 from yc_h3.fsutil import sha256_bytes
+from yc_h3.perf_history import load_observations
 from yc_h3.providers import video_common
 from yc_h3.providers.base import ApprovalRequiredError, ArtifactContractError, GenerationRequest, ProviderConflictError
 from yc_h3.providers.chenyu_comfy import ChenyuComfyProvider
@@ -29,6 +30,9 @@ class Daemon:
         self.vm = "fake-vm"
         self.instance = "remote-process"
         self.rate = 4.0
+        self.hardware = None
+        self.perf = {}
+        self.cold_start = False
         self.jobs = {}
         self.calls = []
         self.submit_calls = []
@@ -52,6 +56,7 @@ class Daemon:
         self.calls.append("preflight")
         return 200, {"status": "pass", "instance_id": self.instance, "preflight_digest": "4" * 64,
                      "managed_instance_id": self.vm if self.chenyu else None,
+                     "hardware": {"gpu_name": self.hardware}, "perf": self.perf,
                      "submission_preflight": "private-handle" if payload.get("for_submission") else None,
                      "billing_context": {"session_name": self.session, "vm_host": self.vm,
                                          "billing_rate": self.rate, "endpoint_origin": self.origin}}
@@ -65,7 +70,7 @@ class Daemon:
         job_id = f"offjob-{len(self.jobs) + 1}"
         self.jobs[job_id] = {
             "id": job_id, "client_request_id": request_id, "status": "done", "params": copy.deepcopy(payload["params"]),
-            "started": 10, "finished": 20,
+            "created": 4, "started": 10, "finished": 20,
             "outputs": [{"path": f"/jobs/{job_id}/clip.mp4", "sha256": sha256_bytes(self.data)}],
         }
         if self.drop:
@@ -83,7 +88,7 @@ class Daemon:
         path.write_bytes(self.data)
 
     def archive_perf(self, job_id):
-        return {"archived": True}
+        return {"archived": True, "cold_start": self.cold_start}
 
 
 def request_at(tmp_path, **options):
@@ -124,6 +129,73 @@ def test_pass_requires_approval_and_checks_strict_decode(tmp_path, monkeypatch, 
     assert "private-handle" not in TaskStore(config=config).task_path(result.task_key).read_text()
 
 
+@pytest.mark.parametrize("provider_class", [ColabComfyProvider, ChenyuComfyProvider])
+def test_comfy_quotes_prioritize_exact_then_normalize_warm_same_gpu(
+    tmp_path, monkeypatch, render_clip, provider_class,
+):
+    config = make_config(tmp_path, monkeypatch, CHENYU_API_KEY="chenyu-fake-key", COLAB_CNY_PER_CU="0.5")
+    chenyu = provider_class is ChenyuComfyProvider
+    daemon = Daemon(config, render_clip(320, 192, 22), chenyu=chenyu)
+    daemon.hardware = "NVIDIA L4"
+    daemon.cold_start = True
+    provider = provider_class(client=daemon, config=config)
+    store = TaskStore(config=config)
+    request = request_at(tmp_path)
+    approval = provider.preflight(request, store=store)
+    assert approval.facts["estimate_source"] == "uncalibrated"
+    assert not config.data_dir.exists()
+    cold = provider.generate(replace(request, approve_digest=approval.digest), store=store)
+
+    longer = replace(request, output_path=tmp_path / "longer.mp4", params={**request.params, "seconds": 1.0})
+    assert provider.preflight(longer, store=store).facts["estimate_source"] == "uncalibrated"
+    daemon.cold_start = False
+    warm = replace(request, output_path=tmp_path / "warm.mp4")
+    approval = provider.preflight(warm, store=store)
+    result = provider.generate(replace(warm, approve_digest=approval.digest), store=store)
+    assert result.state == "delivered"
+    assert provider.fetch(result.task_key, store=store).recovered
+    rows = load_observations(config, provider=provider.provider_id)
+    assert [row["idempotency_key"] for row in rows] == [
+        f"{provider.provider_id}:{cold.remote_id}", f"{provider.provider_id}:{result.remote_id}",
+    ]
+    assert rows[0]["cold_start"] is True and rows[1]["cold_start"] is False
+    assert rows[1]["hardware"] == "NVIDIA L4" and rows[1]["output_seconds"] == 0.5
+    assert rows[1]["width"] == 320 and rows[1]["height"] == 192
+    assert rows[1]["run_seconds"] == 10 and rows[1]["wall_seconds"] == 16
+    assert rows[1]["unit"] == ("CNY" if chenyu else "CU") and rows[1]["estimated_billing"] is True
+
+    daemon.hardware = " nvidia l4 "
+    facts = provider.preflight(longer, store=store).facts
+    assert facts["estimate_source"] == "local_history_normalized" and facts["estimate_samples"] == 1
+    assert facts["estimate_scope"] == "warm_run"
+    assert facts["estimate_seconds"] == 20.0 and facts["estimated_wall_seconds"] == 32.0
+    assert facts["estimated_quantity"] == 0.022222
+    assert facts["estimated_cny"] == (0.022222 if chenyu else 0.011111)
+
+    daemon.perf = {"comparable_samples": 2, "warm_run": {"median_total_s": 45},
+                   "cold_start": {"median_total_s": 90}}
+    exact = provider.preflight(longer, store=store).facts
+    assert exact["estimate_source"] == "local_history_exact" and exact["estimate_samples"] == 2
+    assert exact["estimate_scope"] == "warm_run"
+    assert exact["estimate_seconds"] == exact["estimated_wall_seconds"] == 45.0
+    assert exact["estimated_quantity"] == 0.05
+    assert exact["estimated_cny"] == (0.05 if chenyu else 0.025)
+
+    daemon.perf = {"comparable_samples": 1, "cold_start": {"median_total_s": 90}}
+    exact_cold = provider.preflight(longer, store=store).facts
+    assert exact_cold["estimate_source"] == "local_history_exact" and exact_cold["estimate_scope"] == "cold_start"
+    assert exact_cold["estimate_seconds"] == exact_cold["estimated_wall_seconds"] == 90.0
+
+    daemon.perf = {}
+    for card in ("NVIDIA A100", None):
+        daemon.hardware = card
+        unmatched = provider.preflight(longer, store=store).facts
+        assert unmatched["estimate_source"] == "uncalibrated" and unmatched["estimate_samples"] == 0
+        assert all(unmatched[key] is None for key in (
+            "estimate_seconds", "estimated_wall_seconds", "estimate_scope", "estimated_quantity", "estimated_cny",
+        ))
+
+
 def test_decode_failure_keeps_final_path_and_fetch_can_retry(tmp_path, monkeypatch, render_clip):
     config = make_config(tmp_path, monkeypatch)
     daemon = Daemon(config, render_clip(320, 192, 22))
@@ -143,12 +215,14 @@ def test_decode_failure_keeps_final_path_and_fetch_can_retry(tmp_path, monkeypat
     with pytest.raises(ArtifactContractError, match="双流严格解码"):
         provider.generate(request, store=store)
     assert not request.output_path.exists()
+    assert load_observations(config) == []
     record = store.get(plan.facts["task_key"])
     assert record["state"] == "submitted" and record["reserved_output_path"] is None
     monkeypatch.setattr(video_common, "default_ffmpeg", old_decode)
     result = provider.fetch(record["task_key"], store=store, output_path=tmp_path / "retrieved.mp4")
     assert result.state == "delivered"
     assert Path(result.artifact_path).is_file()
+    assert len(load_observations(config)) == 1
 
 
 def test_ambiguous_force_new_replays_original_request_id_only_on_same_instance(tmp_path, monkeypatch, render_clip):
@@ -198,6 +272,7 @@ def test_chenyu_fetches_historical_job_and_preserves_multiple_proofs(tmp_path, m
     assert recovered.artifact_path == str(tmp_path / "historical.mp4")
     current = store.get(second.task_key)
     assert current["remote_job_id"] == second.remote_id
+    assert len(load_observations(config)) == 2
     proofs = store.list_job_history(provider="chenyu-comfy", instance_uuid=daemon.vm)
     assert len(proofs) == 2 and all(delivery_confirmed(row) for row in proofs)
     lines = (config.data_dir / "ledger" / "usage.jsonl").read_text().splitlines()

@@ -10,11 +10,13 @@ import re
 import shutil
 import tempfile
 import time
+from contextlib import suppress
 from datetime import datetime, timezone
 from pathlib import Path
 
 from PIL import Image, ImageOps
 
+from .. import perf_history
 from ..config import EngineConfig, load_config
 from ..fsutil import ensure_real_path
 from ..ledger import lookup_cny_rate, record_usage
@@ -51,7 +53,8 @@ def request_target(request, config):
     return wanted, logical, task_key
 
 
-def approval_context(request, store, *, config, provider, origin, fingerprint, workflow, params, hashes, facts, target):
+def approval_context(request, store, *, config, provider, origin, fingerprint, workflow, params, hashes, facts, target,
+                     request_facts):
     wanted, logical, task_key = request_target(request, config)
     replaced = submission_identity(store.get(task_key)) if request.force_new else None
     bound_params = {**params, "target_identity": target, "output_path": os.path.normcase(str(wanted)),
@@ -60,8 +63,10 @@ def approval_context(request, store, *, config, provider, origin, fingerprint, w
     identity = dict(task_key=task_key, data_dir=store.data_dir, provider=provider,
                     endpoint_origin=origin, credential_fingerprint=fingerprint, workflow=workflow,
                     params=bound_params, input_hashes=hashes, quote_facts=facts, prompt=request.prompt)
-    request_digest = build_approval_digest(**identity, force_new=False, replaced_submission_id=None)
-    digest = build_approval_digest(**identity, force_new=True, replaced_submission_id=replaced) if request.force_new else request_digest
+    checkpoint = {**identity, "quote_facts": request_facts}
+    request_digest = build_approval_digest(**checkpoint, force_new=False, replaced_submission_id=None)
+    # Rolling estimates affect approval for this quote without changing checkpoint identity.
+    digest = build_approval_digest(**identity, force_new=request.force_new, replaced_submission_id=replaced)
     return dict(wanted=wanted, logical_target=logical, task_key=task_key, replaced_submission_id=replaced,
                 request_digest=request_digest, digest=digest)
 
@@ -384,13 +389,21 @@ class ComfyProvider(Provider):
                     or (self.provider_id == "chenyu-comfy" and pack.get("managed_instance_id") != target["instance_uuid"])
                     or (pack.get("input_content_sha256s") is not None and pack["input_content_sha256s"] != hashes)):
                 return self._blocked("remote_identity_mismatch", "远端实例、输入摘要或审批身份不一致"), {}
-            quote = self._quote(pack)
+            hardware = pack.get("hardware")
+            gpu_name = hardware.get("gpu_name") if isinstance(hardware, dict) else None
+            gpu_name = gpu_name.strip() if isinstance(gpu_name, str) else ""
+            if self._redact(gpu_name) != gpu_name or store.config.redact(gpu_name) != gpu_name:
+                gpu_name = ""
+            quote, request_facts = self._quote(
+                pack, config=store.config, workflow=workflow, output_seconds=normalized["seconds"],
+                has_ref_video=bool(normalized.get("videos")), gpu_name=gpu_name,
+            )
             params_for_approval = {**normalized, "task": task, "model_id": body["model_id"],
                                    "endpoint_digest": endpoint_digest}
             context = approval_context(
                 request, store, config=self.config, provider=self.provider_id, origin=target["endpoint_origin"],
                 fingerprint=target["credential_fingerprint"], workflow=workflow,
-                params=params_for_approval, hashes=hashes, facts=quote, target=target,
+                params=params_for_approval, hashes=hashes, facts=quote, target=target, request_facts=request_facts,
             )
             signals = list(pack.get("signals") or [])
             signals.extend(dict(severity="warn", code="h3_prompt_risk", detail=warning) for warning in warnings)
@@ -409,7 +422,7 @@ class ComfyProvider(Provider):
             )
             context.update(target=target, body=body, endpoint_digest=endpoint_digest,
                            submission_handle=pack.get("submission_preflight"), paths=paths,
-                           normalized=normalized, workflow=workflow)
+                           normalized=normalized, workflow=workflow, gpu_name=gpu_name or None)
             return result, context
         except (OSError, http.client.HTTPException, ProviderError, ValueError, KeyError, TypeError) as exc:
             return self._blocked(getattr(exc, "code", "invalid_comfy_request"), str(exc)), {}
@@ -418,7 +431,7 @@ class ComfyProvider(Provider):
     def workflow_slots():
         return {"images": 9, "audios": 3, "videos": 3, "total": 12, "first_frame": 1}
 
-    def _quote(self, pack):
+    def _quote(self, pack, *, config, workflow, output_seconds, has_ref_video, gpu_name):
         context = pack["billing_context"]
         rate = video.parse_positive_float(context.get("billing_rate"))
         if rate is None:
@@ -431,11 +444,33 @@ class ComfyProvider(Provider):
         history_scope = "warm_run" if warm.get("median_total_s") is not None else "cold_start"
         seconds = video.parse_positive_float((warm if history_scope == "warm_run" else cold).get("median_total_s"))
         estimated = round(rate * seconds / 3600, 6) if seconds is not None else None
-        return dict(billing_rate_per_hour=rate, unit=unit, cny_per_unit=cny_per_unit,
-                    estimated_quantity=estimated, estimate_samples=history.get("comparable_samples", 0),
-                    estimate_seconds=seconds, estimate_scope=history_scope if seconds is not None else None,
-                    estimated_cny=round(estimated * cny_per_unit, 6) if estimated is not None and cny_per_unit is not None else None,
-                    billing_scope="gpu_session", billing_endpoint=context.get("endpoint_origin"))
+        request_facts = dict(
+            billing_rate_per_hour=rate, unit=unit, cny_per_unit=cny_per_unit,
+            estimated_quantity=estimated, estimate_samples=history.get("comparable_samples", 0),
+            estimate_seconds=seconds, estimate_scope=history_scope if seconds is not None else None,
+            estimated_cny=round(estimated * cny_per_unit, 6) if estimated is not None and cny_per_unit is not None else None,
+            billing_scope="gpu_session", billing_endpoint=context.get("endpoint_origin"),
+        )
+        quote = {**request_facts, "estimate_source": "local_history_exact", "estimated_wall_seconds": seconds}
+        if seconds is not None:
+            return quote, request_facts
+
+        local = perf_history.estimate_from_history(
+            config, provider=self.provider_id, workflow=workflow, output_seconds=output_seconds,
+            has_ref_video=has_ref_video, hardware=gpu_name,
+        )
+        if local is None:
+            quote.update(estimate_source="uncalibrated", estimate_samples=0)
+        else:
+            seconds = local["estimated_run_seconds"]
+            estimated = round(rate * seconds / 3600, 6) if seconds is not None else None
+            quote.update(
+                estimate_source="local_history_normalized", estimate_samples=local["samples"],
+                estimate_scope="warm_run", estimate_seconds=seconds, estimated_quantity=estimated,
+                estimated_wall_seconds=local["estimated_wall_seconds"],
+                estimated_cny=round(estimated * cny_per_unit, 6) if estimated is not None and cny_per_unit is not None else None,
+            )
+        return quote, request_facts
 
     def preflight(self, request, *, store=None):
         return self._prepare(request, store or TaskStore(config=self.config))[0]
@@ -460,6 +495,9 @@ class ComfyProvider(Provider):
                     "wanted_output_path": str(ctx["wanted"]), "workflow": ctx["workflow"], "tag": request.metadata.get("tag"),
                     "approved_digest": pf.digest, "quote": pf.facts, "expected_size": [pf.facts["width"], pf.facts["height"]],
                     "expected_frames": pf.facts["frames"],
+                    "has_ref_video": bool(ctx["normalized"].get("videos")),
+                    "output_seconds": ctx["normalized"]["seconds"],
+                    **({"gpu_name": ctx["gpu_name"]} if ctx["gpu_name"] else {}),
                 },
             )
             if action == "delivered" and already_delivered(record):
@@ -675,18 +713,36 @@ class ComfyProvider(Provider):
                 delivered = publish_delivery(store, record, tmp, wanted, {"contract": contract, "billing": billing},
                                              history=history)
                 if history is None:
-                    self._archive(store, delivered, job_id)
+                    cold_start = self._archive(store, delivered, job_id)
+                    if cold_start is None:
+                        perf = job.get("_perf")
+                        cold_start = isinstance(perf, dict) and bool(perf.get("cold_start"))
+                    run_seconds = billing.get("run_seconds") or None
+                    with suppress(OSError, ValueError):
+                        perf_history.record_observation(
+                            store.config, idempotency_key=f"{self.provider_id}:{job_id}",
+                            provider=self.provider_id, workflow=record["workflow"], hardware=record.get("gpu_name"),
+                            width=contract["width"], height=contract["height"],
+                            output_seconds=record.get("output_seconds") or contract["duration_s"],
+                            has_ref_video=bool(record.get("has_ref_video")), run_seconds=run_seconds,
+                            wall_seconds=perf_history.elapsed_seconds(job.get("finished"), job.get("created")) or run_seconds,
+                            billed_quantity=billing.get("quantity"), unit=billing.get("unit"),
+                            estimated_billing=True, cold_start=cold_start,
+                        )
                     return self._result(store, store.get(task_key), recovered=recovered)
         return ArtifactResult(self.provider_id, task_key, "delivered", artifact_path=delivered["artifact_path"],
                               artifact_sha256=delivered["artifact_sha256"], remote_id=job_id, recovered=True, contract=contract)
 
-    def _archive(self, store, record, job_id):
+    def _archive(self, store, record, job_id) -> bool | None:
         try:
             result = self.client.archive_perf(job_id)
         except (OSError, http.client.HTTPException, ProviderError, ValueError):
             return
         if result.get("status") == "archived" or result.get("archived") is True:
             store.mark_perf_archived(record["task_key"])
+            # Public job responses omit _perf, while both archive transports expose this flag.
+            cold_start = result.get("cold_start")
+            return cold_start if type(cold_start) is bool else None
 
     def _job_billing(self, record, job):
         if record.get("billing"):
