@@ -1,0 +1,31 @@
+[build-system]
+requires = ["setuptools>=77"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "yc-h3-engine"
+version = "1.0.0"
+description = "Multi-provider execution engine for MiniMax H3 video generation"
+requires-python = ">=3.12"
+license-files = ["LICENSE", "THIRD_PARTY_NOTICES.md"]
+dependencies = ["pillow>=10.0"]
+
+[project.optional-dependencies]
+dev = ["pytest", "fastapi", "uvicorn", "pydantic", "httpx"]
+
+[project.scripts]
+yc-h3 = "yc_h3.cli:main"
+yc-h3-engine = "yc_h3.cli:main"
+
+[tool.setuptools.packages.find]
+include = ["yc_h3", "yc_h3.*"]
+
+[tool.setuptools.package-data]
+yc_h3 = [
+    "providers/runninghub_workflows/*.json",
+    "providers/chenyu_workflows/*.json",
+    "remote/requirements.txt",
+    "remote/bootstrap_remote.sh",
+    "remote/workflows/minimax_h3/jinyu_hybrid/*",
+    "remote/workflows/minimax_h3/jinyu_combat/*",
+]
