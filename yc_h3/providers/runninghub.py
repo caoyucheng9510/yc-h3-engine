@@ -164,7 +164,7 @@ class RunningHubProvider(Provider):
             setting = f"{specific_key} 或 RUNNINGHUB_WORKFLOW_ID" if specific_key else "RUNNINGHUB_WORKFLOW_ID"
             raise ProviderError(
                 f"请在 RunningHub 复制所选工作流并从网页成功运行一次，再配置数字副本 ID（{setting}）。"
-                "金鱼原帖：https://www.runninghub.cn/post/2124779546246475777",
+                "金鱼原帖：https://www.runninghub.cn/post/2109907990638850050",
                 code="invalid_workflow_id" if workflow_id else "missing_workflow_id", exit_code=3,
             )
         return name, dict(spec, workflow_id=workflow_id)

@@ -108,7 +108,7 @@ def test_public_graphs_and_missing_workflow_id(tmp_path, monkeypatch):
     result = provider.preflight(request)
     assert result.status == "block"
     assert result.signals[0]["code"] == "missing_workflow_id"
-    assert "https://www.runninghub.cn/post/2124779546246475777" in result.signals[0]["detail"]
+    assert "https://www.runninghub.cn/post/2109907990638850050" in result.signals[0]["detail"]
     assert not config.data_dir.exists()
 
 

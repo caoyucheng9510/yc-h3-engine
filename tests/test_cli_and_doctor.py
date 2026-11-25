@@ -65,7 +65,7 @@ def test_doctor_and_workflows_are_read_only(tmp_path, monkeypatch, capsys):
     assert {row["reason"] for row in result["runninghub_workflows"]} == {"missing_workflow_id"}
     assert cli.main([*prefix, "doctor", "--provider", "runninghub", "--json"]) == 3
     result = json.loads(capsys.readouterr().out)
-    assert "2124779546246475777" in result["providers"][0]["details"]["detail"]
+    assert "2109907990638850050" in result["providers"][0]["details"]["detail"]
     assert cli.main([*prefix, "workflows", "--json"]) == 0
     workflows = json.loads(capsys.readouterr().out)
     assert len(workflows) == 8
@@ -116,6 +116,68 @@ def test_capability_aware_provider_matrix(tmp_path, monkeypatch, last_available,
     assert not expected_skips.keys() & set(checked)
     with pytest.raises(ValueError, match="--workflow jinyu-hybrid"):
         registry.normalize_workflow("h3-jinyu-hybrid", "chenyu")
+
+
+def test_custom_provider_order_routing_and_cli_views(tmp_path, monkeypatch, capsys):
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(registry.sys, "platform", "linux")
+    monkeypatch.setattr("yc_h3.providers.video_common.ffmpeg_bin", lambda: "/mock/ffmpeg")
+    monkeypatch.setattr("yc_h3.providers.video_common.ffprobe_bin", lambda: "/mock/ffprobe")
+    monkeypatch.setattr("yc_h3.providers.comfy_client.LocalDaemonClient.health", lambda self: (_ for _ in ()).throw(ConnectionRefusedError()))
+
+    # Custom full order: runninghub preferred over chenyu-comfy when colab-comfy is offline.
+    config = make_config(tmp_path, monkeypatch, YC_H3_PROVIDER_ORDER="colab-comfy, runninghub, chenyu-comfy, chenyu")
+    assert registry.configured_provider_order(config) == ("colab-comfy", "runninghub", "chenyu-comfy", "chenyu")
+    checked = []
+
+    class MockProvider:
+        def __init__(self, name, online):
+            self.provider_id = name
+            self._online = online
+
+        def probe(self, **kwargs):
+            checked.append(self.provider_id)
+            ok = self.provider_id in self._online
+            return ProbeResult(self.provider_id, ok, "" if ok else "offline")
+
+    monkeypatch.setattr(registry, "get_provider", lambda name, cfg: MockProvider(name, {"chenyu-comfy", "runninghub"}))
+    route = registry.resolve_provider(GenerationRequest("video"), config)
+    assert route.provider.provider_id == "runninghub"
+    assert checked == ["colab-comfy", "runninghub"]
+
+    # Custom subset order: never auto-routes outside the configured subset, while explicit --provider still works.
+    subset_cfg = make_config(tmp_path, monkeypatch, YC_H3_PROVIDER_ORDER="colab-comfy,runninghub")
+    checked.clear()
+    monkeypatch.setattr(registry, "get_provider", lambda name, cfg: MockProvider(name, {"chenyu"}))
+    route_none = registry.resolve_provider(GenerationRequest("video"), subset_cfg)
+    assert route_none.provider is None
+    assert checked == ["colab-comfy", "runninghub"]
+    explicit = registry.resolve_provider(GenerationRequest("video", provider_id="chenyu"), subset_cfg)
+    assert explicit.provider.provider_id == "chenyu"
+
+    # CLI providers and doctor surface effective order and project-level ./.env override.
+    (tmp_path / ".env").write_text('YC_H3_PROVIDER_ORDER="runninghub,colab-comfy"\n')
+    monkeypatch.delenv("YC_H3_PROVIDER_ORDER", raising=False)
+    prefix = ["--data-dir", str(tmp_path / "absent")]
+    assert cli.main([*prefix, "providers", "--json"]) == 0
+    providers_out = json.loads(capsys.readouterr().out)
+    assert [row["provider_id"] for row in providers_out] == ["runninghub", "colab-comfy", "chenyu-comfy", "chenyu"]
+    assert [row["auto_route_priority"] for row in providers_out] == [1, 2, None, None]
+
+    assert cli.main([*prefix, "doctor", "--json"]) == 0
+    doctor_out = json.loads(capsys.readouterr().out)
+    assert doctor_out["provider_order"] == ["runninghub", "colab-comfy"]
+    assert [row["provider_id"] for row in doctor_out["providers"]] == ["runninghub", "colab-comfy", "chenyu-comfy", "chenyu"]
+
+    # Invalid provider names fail loudly with exit code 1.
+    (tmp_path / ".env").write_text('YC_H3_PROVIDER_ORDER="runninghub,unknown-backend"\n')
+    assert cli.main([*prefix, "providers", "--json"]) == 1
+    err = json.loads(capsys.readouterr().err)
+    assert "未知通道" in err["message"]
+    (tmp_path / ".env").write_text('YC_H3_PROVIDER_ORDER=" , "\n')
+    assert cli.main([*prefix, "providers", "--json"]) == 1
+    err = json.loads(capsys.readouterr().err)
+    assert "至少包含一个有效通道" in err["message"]
 
 
 @pytest.mark.skipif(sys.platform == "win32", reason="Colab 运行态需 macOS、Linux 或 WSL2")

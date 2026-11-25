@@ -21,7 +21,7 @@ from .remote.workflows.minimax_h3.spec import JINYU_WORKFLOWS
 
 _INIT_KEYS = (
     "RUNNINGHUB_API_KEY", "RUNNINGHUB_WORKFLOW_ID", "RUNNINGHUB_WORKFLOW_ID_HYBRID", "RUNNINGHUB_WORKFLOW_ID_COMBAT",
-    "CHENYU_API_KEY", "YC_H3_DATA_DIR", "RUNNINGHUB_CNY_PER_POINT", "COLAB_CNY_PER_CU",
+    "CHENYU_API_KEY", "YC_H3_DATA_DIR", "YC_H3_PROVIDER_ORDER", "RUNNINGHUB_CNY_PER_POINT", "COLAB_CNY_PER_CU",
 )
 _SUMMARY_FIELDS = ("task_key", "provider", "state", "workflow", "tag", "remote_job_id", "remote_task_id",
                    "artifact_path", "artifact_sha256", "created_at", "updated_at", "delivered_at", "perf_archived")
@@ -294,7 +294,8 @@ def _doctor(args, config):
     elif not supported:
         colab.update(reason=registry.WINDOWS_COLAB_REASON, detail="请使用 WSL2 或选择原生 Windows 通道。")
     workflow_name = registry.normalize_workflow(args.workflow, args.provider)
-    names = (args.provider,) if args.provider else registry.PROVIDER_ORDER
+    effective_order = registry.configured_provider_order(config)
+    names = (args.provider,) if args.provider else registry.display_provider_order(config)
     runninghub_workflows = []
     if "runninghub" in names and args.workflow is None:
         runninghub_workflows = [
@@ -308,6 +309,7 @@ def _doctor(args, config):
         "status": "pass" if check_tools else "block", "python": sys.version.split()[0],
         "ffmpeg": ffmpeg, "ffprobe": ffprobe, "env_files": list(map(str, config.env_files)),
         "env_priority": "显式 .env > 当前目录 .env > 全局 .env > 进程环境",
+        "provider_order": list(effective_order),
         "credential_status": {key: validate_api_key(config.get(key))[1] or "configured"
                               for key in ("RUNNINGHUB_API_KEY", "CHENYU_API_KEY")},
         "data_dir": str(config.data_dir), "colab": colab, "providers": probes,
@@ -601,12 +603,17 @@ def _ledger(args, config):
 
 def _dispatch(args, config):
     if args.command == "providers":
+        effective_order = registry.configured_provider_order(config)
+        ordered = registry.display_provider_order(config)
+        priority = {name: idx for idx, name in enumerate(effective_order, 1)}
         if args.probe or args.remote:
-            return [registry.probe_provider(name, config, remote=args.remote).to_dict()
-                    for name in registry.PROVIDER_ORDER], 0
+            return [{**registry.probe_provider(name, config, remote=args.remote).to_dict(),
+                     "auto_route_priority": priority.get(name)}
+                    for name in ordered], 0
         return [{"provider_id": name, "capabilities": ["video"],
-                 "platform_supported": name != "colab-comfy" or sys.platform != "win32"}
-                for name in registry.PROVIDER_ORDER], 0
+                 "platform_supported": name != "colab-comfy" or sys.platform != "win32",
+                 "auto_route_priority": priority.get(name)}
+                for name in ordered], 0
     handlers = {"doctor": _doctor, "workflows": _workflows, "preflight": _generation, "gen": _generation,
                 "jobs": _jobs, "gpu": _gpu, "daemon": _daemon, "ledger": _ledger}
     return handlers[args.command](args, config)

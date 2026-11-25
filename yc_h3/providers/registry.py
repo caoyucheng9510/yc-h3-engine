@@ -12,9 +12,28 @@ from .comfy_common import ComfyProvider, json_manifest
 from .runninghub_workflows import catalog as runninghub_catalog
 
 PROVIDER_ORDER = ("colab-comfy", "chenyu-comfy", "runninghub", "chenyu")
+PROVIDER_ORDER_ENV = "YC_H3_PROVIDER_ORDER"
 _CATALOGS = {"runninghub": runninghub_catalog, "chenyu": chenyu_catalog}
 _LEGACY_PREFIXES = {"h3-": "runninghub", "chenyu-": "chenyu"}
 WINDOWS_COLAB_REASON = "colab_requires_posix_or_wsl2"
+
+
+def configured_provider_order(config: EngineConfig | None) -> tuple[str, ...]:
+    raw = config.get(PROVIDER_ORDER_ENV) if config is not None else None
+    if raw is None or not raw.strip():
+        return PROVIDER_ORDER
+    items = [part.strip() for part in raw.split(",") if part.strip()]
+    if not items:
+        raise ValueError(f"{PROVIDER_ORDER_ENV} 至少包含一个有效通道（允许值：{', '.join(PROVIDER_ORDER)}）")
+    unknown = [item for item in items if item not in PROVIDER_ORDER]
+    if unknown:
+        raise ValueError(f"{PROVIDER_ORDER_ENV} 包含未知通道：{', '.join(unknown)}（允许值：{', '.join(PROVIDER_ORDER)}）")
+    return tuple(dict.fromkeys(items))
+
+
+def display_provider_order(config: EngineConfig | None) -> tuple[str, ...]:
+    preferred = configured_provider_order(config)
+    return preferred + tuple(name for name in PROVIDER_ORDER if name not in preferred)
 
 
 def normalize_workflow(workflow, provider=None):
@@ -148,7 +167,7 @@ def resolve_provider(request, config):
     if request.provider_id is not None:
         return Route(get_provider(request.provider_id, config), [])
     skipped = []
-    for provider_id in PROVIDER_ORDER:
+    for provider_id in configured_provider_order(config):
         reason = (WINDOWS_COLAB_REASON if provider_id == "colab-comfy" and sys.platform == "win32"
                   else capability_reason(provider_id, request))
         if reason:
