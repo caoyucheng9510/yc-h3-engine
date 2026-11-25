@@ -459,16 +459,16 @@ class ComfyProvider(Provider):
             config, provider=self.provider_id, workflow=workflow, output_seconds=output_seconds,
             has_ref_video=has_ref_video, hardware=gpu_name,
         )
-        if local is None:
+        if local is None or local["estimated_run_seconds"] is None:
             quote.update(estimate_source="uncalibrated", estimate_samples=0)
         else:
             seconds = local["estimated_run_seconds"]
-            estimated = round(rate * seconds / 3600, 6) if seconds is not None else None
+            estimated = round(rate * seconds / 3600, 6)
             quote.update(
                 estimate_source="local_history_normalized", estimate_samples=local["samples"],
                 estimate_scope="warm_run", estimate_seconds=seconds, estimated_quantity=estimated,
                 estimated_wall_seconds=local["estimated_wall_seconds"],
-                estimated_cny=round(estimated * cny_per_unit, 6) if estimated is not None and cny_per_unit is not None else None,
+                estimated_cny=round(estimated * cny_per_unit, 6) if cny_per_unit is not None else None,
             )
         return quote, request_facts
 
@@ -710,25 +710,19 @@ class ComfyProvider(Provider):
                             latest = deliver_copy(store, latest, wanted)
                         return self._result(store, latest, recovered=True)
                     record = latest
-                delivered = publish_delivery(store, record, tmp, wanted, {"contract": contract, "billing": billing},
-                                             history=history)
+                run_seconds = billing.get("run_seconds") or None
+                wall_seconds = perf_history.elapsed_seconds(job.get("finished"), job.get("created")) or run_seconds
+                perf_meta = job.get("_perf")
+                default_cold_start = isinstance(perf_meta, dict) and bool(perf_meta.get("cold_start"))
+                extra = {"contract": contract, "billing": billing}
+                if history is None:
+                    extra.update(wall_seconds=wall_seconds, cold_start=default_cold_start)
+                delivered = publish_delivery(store, record, tmp, wanted, extra, history=history)
                 if history is None:
                     cold_start = self._archive(store, delivered, job_id)
-                    if cold_start is None:
-                        perf = job.get("_perf")
-                        cold_start = isinstance(perf, dict) and bool(perf.get("cold_start"))
-                    run_seconds = billing.get("run_seconds") or None
-                    with suppress(OSError, ValueError):
-                        perf_history.record_observation(
-                            store.config, idempotency_key=f"{self.provider_id}:{job_id}",
-                            provider=self.provider_id, workflow=record["workflow"], hardware=record.get("gpu_name"),
-                            width=contract["width"], height=contract["height"],
-                            output_seconds=record.get("output_seconds") or contract["duration_s"],
-                            has_ref_video=bool(record.get("has_ref_video")), run_seconds=run_seconds,
-                            wall_seconds=perf_history.elapsed_seconds(job.get("finished"), job.get("created")) or run_seconds,
-                            billed_quantity=billing.get("quantity"), unit=billing.get("unit"),
-                            estimated_billing=True, cold_start=cold_start,
-                        )
+                    if cold_start is not None and cold_start != default_cold_start:
+                        with suppress(OSError, ValueError):
+                            store.update_delivered_metadata(task_key, extra={"cold_start": cold_start})
                     return self._result(store, store.get(task_key), recovered=recovered)
         return ArtifactResult(self.provider_id, task_key, "delivered", artifact_path=delivered["artifact_path"],
                               artifact_sha256=delivered["artifact_sha256"], remote_id=job_id, recovered=True, contract=contract)
@@ -764,6 +758,25 @@ class ComfyProvider(Provider):
         record_job_charge(store.config, record, 1, "call", est_cny=bill.get("est_cny"), estimated=True,
                           action="generation_attribution", note="GPU 会话扣款由 session 流水对账")
 
+    def _record_observation(self, store, record):
+        job_id = record.get("remote_job_id")
+        contract = record.get("contract") or {}
+        if not job_id or not contract:
+            return
+        bill = record.get("billing") or {}
+        run_seconds = bill.get("run_seconds") or None
+        wall_seconds = record.get("wall_seconds") or run_seconds
+        with suppress(OSError, ValueError):
+            perf_history.record_observation(
+                store.config, idempotency_key=f"{self.provider_id}:{job_id}",
+                provider=self.provider_id, workflow=record["workflow"], hardware=record.get("gpu_name"),
+                width=contract.get("width"), height=contract.get("height"),
+                output_seconds=record.get("output_seconds") or contract.get("duration_s"),
+                has_ref_video=bool(record.get("has_ref_video")), run_seconds=run_seconds,
+                wall_seconds=wall_seconds, billed_quantity=bill.get("quantity"), unit=bill.get("unit"),
+                estimated_billing=True, cold_start=bool(record.get("cold_start", False)),
+            )
+
     def _result(self, store, record, *, recovered):
         bill = record.get("billing") or {}
         if self.provider_id == "chenyu-comfy":
@@ -771,6 +784,7 @@ class ComfyProvider(Provider):
         else:
             record_job_charge(store.config, record, bill.get("quantity"), bill.get("unit"), est_cny=bill.get("est_cny"),
                               estimated=True)
+        self._record_observation(store, record)
         return ArtifactResult(self.provider_id, record["task_key"], "delivered", artifact_path=record["artifact_path"],
                               artifact_sha256=record["artifact_sha256"], remote_id=record["remote_job_id"],
                               recovered=recovered, contract=record.get("contract") or {}, billing=bill,

@@ -338,3 +338,60 @@ def test_uploaded_reference_produces_same_remote_approval_as_preview(tmp_path, m
     assert plan.input_hashes == {"images.0": sha256_bytes(source.read_bytes())}
     result = provider.generate(replace(request, approve_digest=plan.digest))
     assert result.state == "delivered"
+
+
+def test_comfy_normalized_fallback_requires_run_seconds(tmp_path, monkeypatch):
+    from yc_h3.perf_history import record_observation
+
+    config = make_config(tmp_path, monkeypatch)
+    daemon = Daemon(config)
+    daemon.hardware = "A100-SXM4-80GB"
+    record_observation(
+        config, idempotency_key="colab-comfy:wall-only-1", provider="colab-comfy",
+        workflow="jinyu-hybrid", hardware="A100-SXM4-80GB", width=320, height=192,
+        output_seconds=1.0, has_ref_video=False, run_seconds=None, wall_seconds=15.0,
+        billed_quantity=None, unit="CU", estimated_billing=True, cold_start=False,
+    )
+    provider = ColabComfyProvider(client=daemon, config=config)
+    plan = provider.preflight(request_at(tmp_path))
+    assert plan.status == "pass", plan.signals
+    assert plan.facts["estimate_source"] == "uncalibrated"
+    assert plan.facts["estimate_samples"] == 0
+    assert plan.facts["estimate_seconds"] is None
+    assert plan.facts["estimated_quantity"] is None
+
+
+def test_comfy_resumed_delivery_backfills_observation_after_transient_write_error(tmp_path, monkeypatch, render_clip):
+    from yc_h3 import perf_history
+
+    config = make_config(tmp_path, monkeypatch)
+    daemon = Daemon(config, render_clip(320, 192, 22))
+    daemon.hardware = "A100-SXM4-80GB"
+    daemon.cold_start = True
+    provider = ColabComfyProvider(client=daemon, config=config)
+    store = TaskStore(config=config)
+    request = request_at(tmp_path)
+    plan = provider.preflight(request, store=store)
+    request.approve_digest = plan.digest
+
+    real_record = perf_history.record_observation
+    calls = {"count": 0}
+
+    def fail_once(*args, **kwargs):
+        calls["count"] += 1
+        if calls["count"] == 1:
+            raise OSError("temporary disk busy")
+        return real_record(*args, **kwargs)
+
+    monkeypatch.setattr(perf_history, "record_observation", fail_once)
+    first = provider.generate(request, store=store)
+    assert first.state == "delivered"
+    assert load_observations(config) == []
+
+    resumed = provider.fetch(first.task_key, store=store)
+    assert resumed.artifact_path == first.artifact_path
+    rows = load_observations(config)
+    assert len(rows) == 1
+    assert rows[0]["idempotency_key"] == f"colab-comfy:{first.remote_id}"
+    assert rows[0]["hardware"] == "A100-SXM4-80GB"
+    assert rows[0]["cold_start"] is True
