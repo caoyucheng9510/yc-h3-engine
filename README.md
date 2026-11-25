@@ -40,7 +40,7 @@
 ### 装法 A：装成全局命令 + 配上 Skill（推荐）
 
 ```bash
-git clone <你的仓库地址> yc-h3-engine
+git clone https://github.com/caoyucheng9510/yc-h3-engine.git
 cd yc-h3-engine
 uv tool install .
 ```
@@ -50,7 +50,7 @@ uv tool install .
 ### 装法 B：不想全局装，就在仓里跑
 
 ```bash
-git clone <你的仓库地址> yc-h3-engine
+git clone https://github.com/caoyucheng9510/yc-h3-engine.git
 cd yc-h3-engine
 uv sync
 uv run yc-h3 --help
@@ -71,7 +71,7 @@ uv run yc-h3 --help
 
 按这个顺序来：
 1. 检查本机有没有 Python 3.12+、uv 和 ffmpeg/ffprobe，缺了就先告诉我怎么装。
-2. 从 <你的仓库地址> clone 到本机，用 uv tool install . 装好 yc-h3，并把 skills/yc-h3-engine/ 安装到我常用的 Agent Skill 目录。
+2. 从 https://github.com/caoyucheng9510/yc-h3-engine clone 到本机，用 uv tool install . 装好 yc-h3，并把 skills/yc-h3-engine/ 安装到我常用的 Agent Skill 目录。
 3. 运行 yc-h3 init 生成 ~/.yc-h3-engine/.env，然后按我选的平台（RunningHub / 晨羽 / Colab）对照 README 引导我填好对应的 Key 和配置。
 4. 配完后跑 yc-h3 doctor --remote 检查本地依赖和远端余额，确认能连通后再告诉我。
 
