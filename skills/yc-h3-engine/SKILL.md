@@ -45,7 +45,7 @@ compatibility: 跨平台 CLI（Python >= 3.12、FFmpeg/FFprobe）；RunningHub�
 1. **先预检，再确认，后提交（三类摘要字段来源须准确区分）**：
    - **视频生成**：先执行 `yc-h3 preflight ... --json`，读取返回顶层的 **`approve_digest`**；用户批准后，**原样保持全部参数（含 `--tag`）不变**，追加 `--approve-digest <approve_digest>` 执行 `yc-h3 gen`。
    - **受管 GPU 开机 / 改时限**：先执行 `yc-h3 gpu plan --backend colab|chenyu ... --json`，读取返回顶层的 **`digest`**；用户批准后，原样参数追加 `--approve-digest <digest>` 执行 `yc-h3 gpu up`。
-   - **晨羽保存私有镜像**：在存在可保存的受管运行实例时，先不带摘要执行 `yc-h3 gpu save-image --backend chenyu --json`（计划生成成功后返回退出码 `2` 并向 stderr 输出错误 JSON；若实例已停或存在未交付作业会先以退出码 `3` 阻断），读取错误 JSON 中的 **`preflight.approve_digest`**；用户批准后，原样追加 `--approve-digest <approve_digest>` 再执行。
+   - **晨羽保存私有镜像**：在存在可保存的受管运行实例时，先不带摘要执行 `yc-h3 gpu save-image --backend chenyu --json`（计划生成成功后返回退出码 `2` 并向 stderr 输出错误 JSON；若实例已停或有待核对状态会先以退出码 `3` 退出），读取错误 JSON 中的 **`preflight.approve_digest`**；用户批准后，原样追加 `--approve-digest <approve_digest>` 执行（此时在生命周期锁内核验远端与本地交付证明，若存在未交付作业将以退出码 `3` 阻断并给出定向 `jobs fetch` 命令）。
    - 严禁篡改审批后素材、严禁静默绕过预检或私自切换付费通道。
 2. **断点恢复与单次 `--force-new`**：
    - 建单断线或超时后，先执行 `yc-h3 jobs list --json` 查看状态，按 `yc-h3 jobs resume <task_key> --json` 或 `yc-h3 jobs fetch <task_key> --json` 恢复领取（可加 `--out <new_path>` 换落盘路径、加 `--remote-job-id <id>` 补领历史作业）；

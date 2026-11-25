@@ -143,8 +143,9 @@ yc-h3 preflight --provider chenyu --workflow my-chenyu-wf --task t2v \
    - **`manifest.json`**：直接复制完整的内置 `yc_h3/remote/workflows/minimax_h3/jinyu_hybrid/manifest.json`（保留默认配方必需的完整权重清单与 `id` 别名：`hybrid_b25_49`、`heretic`、`text_enc_nvfp4`、`video_vae_int8`、`audio_vae_fp32`、`lora_dmad`、`lora_mystic_v1`、`selflift_lms` 等），再按需修改以下字段：
      - 将 `"id"` 改为 `"my-custom-wf"`；
      - 将 `"verification"` 字典中全部卡型值重置为 `"unverified"`（必须保持按卡型映射的 JSON 对象，不可改为单个字符串）；
-     - 如新增自定义 LoRA 或替换权重，在 `"weights"` 数组中添加含唯一 `"id"`、`repo`、`revision`、`repo_path`、`comfy_rel_path`、`size_bytes`、`sha256` 的完整条目。
-   - **`builder.py`**（必须实现远端 `registry.py` 调用的 `build(params, profile, job_id)`，可复用 `jinyu_hybrid/builder.py` 的 `build_jinyu`）：
+     - 如需**替换已有权重**：保留原 `builder.py` 引用的资产 `"id"`，更新对应条目的 `repo`/`revision`/`repo_path`/`size_bytes`/`sha256` 并使用不与内置声明冲突的 `comfy_rel_path`；
+     - 如需**新增自定义 LoRA**：在 `"weights"` 数组添加含唯一 `"id"` 的完整条目后，还须在自定义 `builder.py` 中显式调用 `graph.lora(model, "<new_id>", strength)` 接入构图（仅改 `manifest.json` 而直接复用内置 `build_jinyu` 只会准备权重文件、不会自动挂载新 LoRA 节点）。
+   - **`builder.py`**（必须实现远端 `registry.py` 调用的 `build(params, profile, job_id)`；默认配方可复用 `jinyu_hybrid/builder.py` 的 `build_jinyu`，自定义 LoRA 配方则参照 `jinyu_hybrid/builder.py` 复制展开并在 `loras` 列表中显式挂载新 `"id"`）：
      ```python
      from ..jinyu_hybrid.builder import build_jinyu
 
@@ -155,10 +156,12 @@ yc-h3 preflight --provider chenyu --workflow my-chenyu-wf --task t2v \
 2. **同步本地逻辑名与打包规则**：
    - 将 `"my-custom-wf"` 加入 `yc_h3/remote/workflows/minimax_h3/spec.py` 的 `JINYU_WORKFLOWS`（**跨平台红线**：`spec.py` 保持纯 Python、零 `fcntl` 导入，确保原生 Windows 可正常浏览工作流与跑 `chenyu-comfy`）；
    - 核对 `pyproject.toml` 确保新目录的 `manifest.json` 已覆盖在包数据匹配规则内。
-3. **安装开发依赖并验证规范化、实际构图与全量回归**：
+3. **安装开发依赖并验证规范化、实际构图与通道枚举**：
    ```bash
    uv sync --extra dev
-   uv run pytest
+   # 注：原版内置测试固定断言 2 套内置工作流，请在扩展前运行 uv run pytest 验证基线；
+   # 扩展自定义工作流后，运行下方构图校验与目标通道枚举（新增 LoRA 时同时断言对应 LoraLoaderModelOnly 节点已加载目标文件名）：
    uv run python -c "from yc_h3.remote.workflows.minimax_h3 import registry, spec; wf = registry.get_workflow('my-custom-wf'); profile = spec.resolve_hardware_profile(96, 176, 'G4'); norm = wf.normalize('t2v', {'workflow':'my-custom-wf','prompt':'test','seconds':5}, profile); graph, output_id = wf.build(norm, profile, 'smoke'); assert graph[output_id]['class_type'] == 'SaveVideo'; print('nodes:', len(graph), 'output:', output_id)"
    uv run yc-h3 workflows --provider chenyu-comfy --json
    ```
+   > 提示：`yc-h3 doctor` 会按共用工作流名单 `JINYU_WORKFLOWS` 检查 RunningHub；如果新增工作流仅面向受管 ComfyUI，请使用 `yc-h3 doctor --provider chenyu-comfy` 或同步在 RunningHub 目录登记对应条目。
