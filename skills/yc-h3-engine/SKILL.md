@@ -11,6 +11,9 @@ compatibility: 跨平台 CLI（Python >= 3.12、FFmpeg/FFprobe）；RunningHub�
 - **只专注 MiniMax-H3 生视频执行**：本 Skill 负责算力管理、只读预检与费用门禁、提交生成、断点恢复与费用台账；**不负责**上游编剧、分镜、生图、提示词创作或下游剪辑。
 - **输入契约（按任务类型与通道区分）**：
   - **必需输入**：**规范化的 MiniMax-H3 提示词**（`--prompt` 或 `--prompt-file`）与 **生成规格及输出路径**（`--out`，以及按需指定的 `--provider`、`--workflow`、`--seconds`、`--aspect` 等）。
+  - **输出路径约定（`--out`）**：
+    - 用户指定了路径或当前项目已有目录约定（如 `assets/clips/`）时，按约定填 `--out`；
+    - 用户未提输出路径且当前目录无明确约定时，**严禁默认写入 `/tmp` 或工具仓库目录**——应先询问用户想保存到哪里；若用户交由 Agent 自定，则落到当前工作目录的 `./outputs/<语义文件名>.mp4`（重名时 CLI 自动按 `_v2` 递增，绝不覆盖已有文件）。
   - **条件输入（本地参考素材，按 `--task` 与通道能力提供）**：
     - `t2v`（文生视频）：**零参考素材**（不可传图/音/视频/首帧；省略全部素材参数时 CLI 自动推断为 `t2v`）；
     - `r2v`（多模态参考）：至少 1 项该通道支持的本地参考图 / 音频 / 视频（`--image` / `--audio` / `--video`）；
@@ -66,7 +69,7 @@ compatibility: 跨平台 CLI（Python >= 3.12、FFmpeg/FFprobe）；RunningHub�
    - 四通道成片交付后会尽力将脱敏运行观测（不含提示词、本地路径或凭据）写入 `<data_dir>/perf/observations.jsonl`（受管 ComfyUI 指定历史远端作业补领不新写观测，旧 RunningHub `r2v` 断点缺失是否含视频标记时不入库）；后续 `preflight` 会结合本地历史自动估算耗时与费用，结果位于返回 JSON 的 `facts` 中：
      - 通用来源字段：`estimate_source`（`local_history` / `local_history_exact` / `local_history_normalized` / `initial_baseline` / `uncalibrated`）与 `estimate_samples`；其中受管 ComfyUI 的 `local_history_exact` 来自本地单作业 `perf.json` 归档（按 `workload_key` 精确匹配，暖跑优先、冷跑可用），无有效精确耗时时再回退读取 `observations.jsonl` 做暖跑归一化（`local_history_normalized`）；
      - 耗时与费用字段：`estimated_wall_seconds`、`estimated_run_seconds`（`runninghub` / `chenyu`）、`estimate_seconds`（`chenyu-comfy` / `colab-comfy`）、`estimated_reference_points`（`runninghub`）、`estimated_quantity`（`chenyu-comfy` / `colab-comfy`）与 `estimated_cny`。
-   - Agent 在请用户审批确认时，须按 `facts` 中的**实际非空字段**如实向用户汇报**预估来源**（本地实跑 `N` 单 / 初始参考基线 / 暂无估算）以及**预计耗时与费用**；缺失或为 `null` 的单项如实报“暂无估算”，待用户确认后再提交。
+   - Agent 在请用户审批确认时，须同时列出**最终输出路径（`--out`）**，并按 `facts` 中的**实际非空字段**如实向用户汇报**预估来源**（本地实跑 `N` 单 / 初始参考基线 / 暂无估算）以及**预计耗时与费用**；缺失或为 `null` 的单项如实报“暂无估算”，待用户确认后再提交。
 3. **断点恢复、晨羽超时续拉与单次 `--force-new`**：
    - 建单断线或超时后，先执行 `yc-h3 jobs list --json` 查看状态，按 `yc-h3 jobs resume <task_key> --json` 或 `yc-h3 jobs fetch <task_key> --json` 恢复领取（可加 `--out <new_path>` 换落盘路径、加 `--remote-job-id <id>` 补领历史作业）；
    - **晨羽按次超时续拉**：`chenyu` 按次 API 默认轮询超时已放宽至 **60 分钟（`3600s`）**；若仍返回 `task_not_completed`，说明原订单已受理且远端尚未完成，CLI 已停止本次等待并保留本地断点——告知用户稍后使用 `yc-h3 jobs resume <task_key>` 继续轮询或 `yc-h3 jobs fetch <task_key>` 单次查取，均可沿用同一订单拉取（不重复下单，最终状态仍以远端返回为准），**禁止擅自使用 `--force-new` 重下单**；
