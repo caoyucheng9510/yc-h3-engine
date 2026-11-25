@@ -2,7 +2,7 @@
 
 ## WorldForge
 
-`yc_h3/local/` and `yc_h3/remote/` contain work derived from WorldForge
+`yc_h3/local/` and `yc_h3/remote/` contain work derived from [WorldForge](https://github.com/designfuchen/worldforge)
 under the original MIT License reproduced below.
 
 ```text
@@ -35,7 +35,7 @@ SOFTWARE.
 `yc_h3/providers/runninghub_workflows/jinyu-combat.json` adapt YZ金鱼's
 public workflow, “YZ金鱼-MiniMax H3 终极篇-文武双全”. The adapted graphs are
 excluded from this repository's MIT relicensing and remain attributed to
-their original author. [Original RunningHub post](https://www.runninghub.cn/post/2124779546246475777)
+their original author. [Original RunningHub post](https://www.runninghub.cn/post/2109907990638850050) · [Author on RunningHub](https://www.runninghub.cn/user-center/1895752239757856770) · [Author on Bilibili](https://space.bilibili.com/14843708) · [Walkthrough video](https://www.bilibili.com/video/BV1LKJm6VELc/)
 
 This repository does not host model weights. The underlying MiniMax H3
 model and community LoRAs are governed by their respective upstream terms.

@@ -49,7 +49,11 @@ compatibility: 跨平台 CLI（Python >= 3.12、FFmpeg/FFprobe）；RunningHub�
 | 持续批跑 / 参考视频（全平台含 Win） | `chenyu-comfy` | 9 图 + 3 音 + 3 视频（合计 ≤ 12，视频伴音占音频与总量槽且共用 15s 音频上限） | 晨羽独占 GPU，纯 HTTPS 无需 SSH，与 `chenyu` 共用 Key 与钱包 |
 | 已有 Colab CU 额度大批量跑片 | `colab-comfy` | 9 图 + 3 音 + 3 视频（合计 ≤ 12，视频伴音占音频与总量槽且共用 15s 音频上限） | 仅支持 macOS / Linux / Windows WSL2，原生 Windows 自动拦截退出码 `3` |
 
-- 省略 `--provider` 时，CLI 会按可用性与**本次请求能力**自动选路（例如传了 `--video`、小数 `--seconds`、`--seed`、`--steps`、`--trim-to-requested-seconds` 时自动跳过 `chenyu` 按次 API）。
+- **自定义通道优先级与自动选路**：
+  - Agent 选通道与回退顺位按以下优先级执行：**当轮用户明确指定 > 当前项目规则（如项目 `AGENTS.md`）> `.env` 的 `YC_H3_PROVIDER_ORDER`（可通过 `yc-h3 doctor --json` 的 `provider_order` 字段或 `yc-h3 providers --json` 读取）> 默认顺位（`colab-comfy → chenyu-comfy → runninghub → chenyu`）**。
+  - 省略 `--provider` 时，CLI 会按 `YC_H3_PROVIDER_ORDER`（未配时走默认顺位）与**本次请求能力**自动选路（例如传了 `--video`、小数 `--seconds`、`--seed`、`--steps`、`--trim-to-requested-seconds` 时自动跳过 `chenyu` 按次 API；若配置里只写了部分通道，自动选路仅在所列通道中匹配，显式 `--provider` 仍不受限制）。
+  - 若首选通道是独占 GPU（如 `colab-comfy`）但当前未开机或申请无库存，**严禁私自切换到其他付费通道**；须先向用户汇报并征得当轮确认，再按用户排好的下一顺位通道（例如 `runninghub`）继续执行。
+  - 若用户想长期固定某套顺序（例如先 Colab、再 RunningHub、最后晨羽），引导其写入 `~/.yc-h3-engine/.env`（全局）或当前项目 `./.env`（项目级覆盖）：`YC_H3_PROVIDER_ORDER=colab-comfy,runninghub,chenyu-comfy,chenyu`。
 
 ## 4. 费用门禁、预估汇报与断点恢复（铁律）
 

@@ -3,7 +3,7 @@
 ## 1. 必备配置（`.env`）
 
 - `RUNNINGHUB_API_KEY`：RunningHub 开放平台 API Key。
-- `RUNNINGHUB_WORKFLOW_ID`：用户自己在网页端复制 [YZ金鱼原帖](https://www.runninghub.cn/post/2124779546246475777) 并**成功运行一次（Plus 48GB）**后获取的工作流 ID。
+- `RUNNINGHUB_WORKFLOW_ID`：用户自己在网页端打开 [YZ金鱼原帖](https://www.runninghub.cn/post/2109907990638850050) 并**成功运行一次（Plus 48GB）**后获取的工作流 ID。
   - 若文戏与武打使用不同副本，可分别配置 `RUNNINGHUB_WORKFLOW_ID_HYBRID` 与 `RUNNINGHUB_WORKFLOW_ID_COMBAT`。
 - 可选：`RUNNINGHUB_CNY_PER_POINT`（单积分人民币折算价，仅影响新预检与新入账流水）、`YC_H3_RUNNINGHUB_MAX_CONCURRENCY`（本地并发槽位）。
 

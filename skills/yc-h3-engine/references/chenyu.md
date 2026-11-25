@@ -38,14 +38,18 @@ yc-h3 gen --provider chenyu --workflow jinyu-hybrid \
 
 - **适用**：持续批跑、需要参考视频 / 小数秒 / 自定义 seed / 私有镜像复用权重，且无需本地守护进程与 SSH（Windows 原生可用）。
 - **槽位**：9 图 + 3 音频 + 3 视频（合计 `<= 12`；有伴音参考视频同时占用音频槽与总量槽，并与独立音频共用累计 `<= 15s` 上限；支持 `--first-frame` 走 `i2v`、`--mute-reference-video`、`--trim-to-requested-seconds`）。
-- **生命周期与计费护栏**：
+- **生命周期、查卡、私有镜像与计费护栏**：
+  - **实时查卡与回退顺位**：`gpu plan --backend chenyu --gpu AUTO --json` 严格只读，会实时拉取晨羽 `/gpu/list` 返回各候选卡的 `available` / `stock` 与小时价；`--gpu AUTO` 默认按 **`6000D-84G → nGPU-48GB → 5090`** 自动回退（亦支持单卡或逗号顺位，另预设 `nGPU-32GB`、`4090D`）。
   - 建机前冻结绝对截止时间，建机回执丢失时在当前命令内自动认领并挂平台定时停机与空闲销毁护栏；若进程在挂护栏前被强杀/断电，务必运行 `yc-h3 gpu reconcile --backend chenyu` 或登录晨羽网页端核查。
-  - 权重默认缓存在持久盘 `/usrdata/yc_h3_engine/models`。
-  - **存镜像两步审批与防丢片**：存在可保存的受管运行实例且计划生成成功时，首次不带摘要执行 `gpu save-image` 返回退出码 `2` 并向 stderr 输出错误 JSON（摘要在 `preflight.approve_digest`；若实例已停或有待核对状态会先阻断退出）；执行时会在生命周期锁内核对远端作业列表与本地多版本交付证明，若存在未取回成片直接阻断并给出 `yc-h3 jobs fetch <task_key> --remote-job-id <id>` 领取命令。
+  - **权重持久盘与 50 GB 免费额度**：权重默认缓存在持久盘 `/usrdata/yc_h3_engine/models`。平台「我的镜像」与 `/usrdata` 存储各有 **50 GB 免费额度**，超额按 `¥0.00036/GB/小时` 计费；环境升级时避免在旧私有镜像上反复叠层保存，建议从官方基础镜像重建并清理旧镜像。
+  - **存私有镜像两步审批与防丢片**：存在可保存的受管运行实例且计划生成成功时，首次不带摘要执行 `gpu save-image` 返回退出码 `2` 并向 stderr 输出错误 JSON（摘要在 `preflight.approve_digest`；若实例已停或有待核对状态会先阻断退出）；执行时会在生命周期锁内核对远端作业列表与本地多版本交付证明，若存在未取回成片直接阻断并给出 `yc-h3 jobs fetch <task_key> --remote-job-id <id>` 领取命令。保存成功后自动关机并返回新的 `image_uuid`。
+  - **复用私有镜像或已有 Pod**：`gpu plan` / `gpu up` 不会自动改用上次保存的镜像，须显式传 `--image-uuid <image_uuid>` 复用；若使用晨羽网页端已建好的 Pod，可传 `--pod-uuid <pod_uuid>`（可选 `--pod-tag <tag>`，与 `--image-uuid` 互斥；CLI 不支持直接发布新 Pod）。
 - **本地实跑自校准预估**：单镜 `preflight` 优先读取本地单作业 `perf.json` 归档，按 `workload_key` 精确匹配计算中位数（`estimate_source: "local_history_exact"`，暖跑优先、冷跑可用）；无有效精确耗时时，再回退读取 `<data_dir>/perf/observations.jsonl`（由成片交付后尽力写入；指定历史远端作业补领不会新写观测）按同卡型、同工作流、同参考视频类别做暖跑归一化估算（`estimate_source: "local_history_normalized"`，含 `estimate_samples`、`estimate_seconds`、`estimated_wall_seconds`、`estimated_quantity`、`estimated_cny`）；均无可用样本时返回 `estimate_source: "uncalibrated"`。
 
 ```bash
-# 1) 规划并经批准开机（从 gpu plan 返回的 digest 字段取得摘要；--setup 默认装齐金鱼插件）
+# 1) 规划并经批准开机（gpu plan 会实时查询库存并返回 digest；--setup 默认装齐金鱼插件）
+# 下次复用已保存私有镜像时，在 plan 和 up 两步同时追加 --image-uuid "<image_uuid>"
+# 从网页端已有 Pod 启动时，追加 --pod-uuid "<pod_uuid>" [--pod-tag "<tag>"]（与 --image-uuid 互斥）
 yc-h3 gpu plan --backend chenyu --session h3 --gpu AUTO --setup \
   --max-runtime-minutes 120 --idle-minutes 30 --json
 
