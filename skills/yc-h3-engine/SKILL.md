@@ -95,7 +95,7 @@ yc-h3 gen --provider runninghub --workflow jinyu-hybrid \
 - **常规参考素材（传 `--image` / `--audio` / `--video` → `--task r2v` → `ref2va` 英文六段式）**：首行必须直接以 `subject_definitions:` 开头，依次写齐 `subject_definitions:` → `summary:` → `retention_analysis:` → `detailed_description:`（内含 `[Shot 1]`）→ `overall_soundscape:` → `non_diegetic_music:`；单图参考在 RunningHub / 晨羽按次请用 `--task r2v`（不要传 `--first-frame`）。
 - **受管 ComfyUI 单独首帧（传 `--first-frame` → 自动推断 `--task i2v` → `i2va` 英文三段式）**：仅 `colab-comfy` / `chenyu-comfy` 支持 `--first-frame`（不要同时传 `--task r2v`）；首行必须包含官方首帧对齐指令（含 `0.00 seconds` 与 `<Picture 1>`，如 `The video starts at 0.00 seconds with <Picture 1>.`），随后依次写齐 `integrated_multimodal_description:`（含 `[Shot 1]`）→ `overall_soundscape:` → `non_diegetic_music:`。
 - **引用编号对齐**：重复传入的 `--image` 按顺序对应 `<Picture 1>`, `<Picture 2>`...；重复传入的 `--video` 按顺序对应 `<Video 1>`, `<Video 2>`...；当同时传入有伴音参考视频与独立音频时，视频伴音排在 `<Audio 1>`，独立音频依次顺延（静音参考视频请加 `--mute-reference-video`）。
-- **无负向词与 `--no-music` 行为**：正文建议用可见/可听的正向描述，避免 `no music` / `without text` 等疑似负向措辞；传入 `--no-music` 时，若提示词缺失 `non_diegetic_music:` 段会由 CLI 自动补为 `N/A`，仅当提示词显式写了非 `N/A` 配乐描述时才因冲突被拒。
+- **无负向词与 `--no-music` 行为**：正文建议用可见/可听的正向描述，避免 `no music` / `without text` 等疑似负向措辞；传入 `--no-music` 时，若提示词缺失 `non_diegetic_music:` 段会由 CLI 自动补为 `N/A`；若已写该段，其内容必须为 `N/A`（留空或写了非 `N/A` 配乐描述均会因冲突被拒）。
 - **阻断 vs 警告边界**：段落结构/顺序错误、空段、`ref2va` 首行非 `subject_definitions:`、`i2va` 缺失首帧对齐指令、镜头编号/切镜时间戳越界及素材引用编号越界会由 `preflight` **确定性阻断**；`t2va` 多余前置文本、正文疑似负向措辞、非 `N/A` 配乐以及中/日/韩（CJK）台词烧字幕提醒属于**非阻断警告（`warn`）**。
 
 ## 6. 按需查阅通道细则

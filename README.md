@@ -49,6 +49,9 @@ uv sync
 uv run yc-h3 --help
 ```
 
+### 搭配官方 MiniMax-H3 提示词 Skill（推荐）
+本工具专注**生视频执行**，输入需要规范化的 MiniMax-H3 提示词，仓内不内置非官方写词兜底模板。推荐一并安装 MiniMax 官方开源的 **[`h3-prompt-writing` Skill](https://github.com/MiniMax-AI/MiniMax-H3/tree/main/.agents/skills/h3-prompt-writing)**，先由它把你的镜头想法转成规范 H3 提示词，再交给 `yc-h3-engine` 执行生成。
+
 ---
 
 ## 三、平台准备与 `.env` 配置（开箱即用）
