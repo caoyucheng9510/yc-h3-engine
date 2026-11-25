@@ -9,7 +9,12 @@ compatibility: 跨平台 CLI（Python >= 3.12、FFmpeg/FFprobe）；RunningHub�
 ## 输入契约与职责边界
 
 - **只专注 MiniMax-H3 生视频执行**：本 Skill 负责算力管理、只读预检与费用门禁、提交生成、断点恢复与费用台账；**不负责**上游编剧、分镜、生图、提示词创作或下游剪辑。
-- **固定输入契约**：调用前须具备三类就绪输入——**准备好的本地参考素材**（图片 / 音频 / 参考视频 / 首帧）+ **规范化的 MiniMax-H3 提示词** + **生成规格参数**（通道、工作流、时长、画幅、输出路径等）。
+- **输入契约（按任务类型与通道区分）**：
+  - **必需输入**：**规范化的 MiniMax-H3 提示词**（`--prompt` 或 `--prompt-file`）与 **生成规格及输出路径**（`--out`，以及按需指定的 `--provider`、`--workflow`、`--seconds`、`--aspect` 等）。
+  - **条件输入（本地参考素材，按 `--task` 与通道能力提供）**：
+    - `t2v`（文生视频）：**零参考素材**（不可传图/音/视频/首帧；省略全部素材参数时 CLI 自动推断为 `t2v`）；
+    - `r2v`（多模态参考）：至少 1 项该通道支持的本地参考图 / 音频 / 视频（`--image` / `--audio` / `--video`）；
+    - `i2v`（仅受管 ComfyUI）：单独首帧图（`--first-frame`）。
 - **官方写词 Skill 协作引导**：本 Skill 不内置非官方写词兜底模板。当用户只提供了口语化中文描述或剧情想法、尚未形成规范 H3 提示词时：
   - 优先交由已安装的官方提示词 Skill **`h3-prompt-writing`**（或用户指定的写词 Skill）生成规范提示词后，再调用 `yc-h3`；
   - 若用户尚未安装写词 Skill，明确引导其先安装官方 `h3-prompt-writing` Skill（`https://github.com/MiniMax-AI/MiniMax-H3/tree/main/.agents/skills/h3-prompt-writing`），生成规范提示词后再继续执行生视频。
@@ -54,13 +59,13 @@ compatibility: 跨平台 CLI（Python >= 3.12、FFmpeg/FFprobe）；RunningHub�
    - **晨羽保存私有镜像**：在存在可保存的受管运行实例时，先不带摘要执行 `yc-h3 gpu save-image --backend chenyu --json`（计划生成成功后返回退出码 `2` 并向 stderr 输出错误 JSON；若实例已停或有待核对状态会先以退出码 `3` 退出），读取错误 JSON 中的 **`preflight.approve_digest`**；用户批准后，原样追加 `--approve-digest <approve_digest>` 执行（此时在生命周期锁内核验远端与本地交付证明，若存在未交付作业将以退出码 `3` 阻断并给出定向 `jobs fetch` 命令）。
    - 严禁篡改审批后素材、严禁静默绕过预检或私自切换付费通道。
 2. **本地实跑自校准预估与汇报要求**：
-   - 四通道成片交付后会自动将脱敏运行观测（不含提示词、本地路径或凭据）静默记录到 `<data_dir>/perf/observations.jsonl`；后续 `preflight` 会结合本地历史自动估算预计耗时与费用，结果位于返回 JSON 的 `facts` 中：
-     - 通用来源字段：`estimate_source`（`local_history` / `local_history_exact` / `local_history_normalized` / `initial_baseline` / `uncalibrated`）与 `estimate_samples`；
+   - 四通道成片交付后会尽力将脱敏运行观测（不含提示词、本地路径或凭据）写入 `<data_dir>/perf/observations.jsonl`（受管 ComfyUI 指定历史远端作业补领不新写观测，旧 RunningHub `r2v` 断点缺失是否含视频标记时不入库）；后续 `preflight` 会结合本地历史自动估算耗时与费用，结果位于返回 JSON 的 `facts` 中：
+     - 通用来源字段：`estimate_source`（`local_history` / `local_history_exact` / `local_history_normalized` / `initial_baseline` / `uncalibrated`）与 `estimate_samples`；其中受管 ComfyUI 的 `local_history_exact` 来自本地单作业 `perf.json` 归档（按 `workload_key` 精确匹配，暖跑优先、冷跑可用），无有效精确耗时时再回退读取 `observations.jsonl` 做暖跑归一化（`local_history_normalized`）；
      - 耗时与费用字段：`estimated_wall_seconds`、`estimated_run_seconds`（`runninghub` / `chenyu`）、`estimate_seconds`（`chenyu-comfy` / `colab-comfy`）、`estimated_reference_points`（`runninghub`）、`estimated_quantity`（`chenyu-comfy` / `colab-comfy`）与 `estimated_cny`。
-   - Agent 在请用户审批确认时，须如实向用户说明**预估来源**（本地实跑 `N` 单 / 初始参考基线 / 暂无估算）以及**预计耗时与费用**，待用户确认后再提交。
+   - Agent 在请用户审批确认时，须按 `facts` 中的**实际非空字段**如实向用户汇报**预估来源**（本地实跑 `N` 单 / 初始参考基线 / 暂无估算）以及**预计耗时与费用**；缺失或为 `null` 的单项如实报“暂无估算”，待用户确认后再提交。
 3. **断点恢复、晨羽超时续拉与单次 `--force-new`**：
    - 建单断线或超时后，先执行 `yc-h3 jobs list --json` 查看状态，按 `yc-h3 jobs resume <task_key> --json` 或 `yc-h3 jobs fetch <task_key> --json` 恢复领取（可加 `--out <new_path>` 换落盘路径、加 `--remote-job-id <id>` 补领历史作业）；
-   - **晨羽按次超时友好安抚与续拉**：`chenyu` 按次 API 默认轮询超时已放宽至 **60 分钟（`3600s`）**；若因平台排队审查波动仍返回 `task_not_completed`，须明确告知用户**任务仍在远端排队/生成中，未丢失也不会重复扣费**，稍后执行 `yc-h3 jobs resume <task_key>` 或 `yc-h3 jobs fetch <task_key>` 取回即可，**禁止擅自使用 `--force-new` 重下单**；
+   - **晨羽按次超时续拉**：`chenyu` 按次 API 默认轮询超时已放宽至 **60 分钟（`3600s`）**；若仍返回 `task_not_completed`，说明原订单已受理且远端尚未完成，CLI 已停止本次等待并保留本地断点——告知用户稍后使用 `yc-h3 jobs resume <task_key>` 继续轮询或 `yc-h3 jobs fetch <task_key>` 单次查取，均可沿用同一订单拉取（不重复下单，最终状态仍以远端返回为准），**禁止擅自使用 `--force-new` 重下单**；
    - 只有在用户确认要重做时才使用 `--force-new` 重新预检审批；同一次 `--force-new` 审批只可消费一次，防止断线重跑重复扣费。
 4. **统一退出码**：
    - `0`：成功 / 预检 `pass`
@@ -85,12 +90,13 @@ yc-h3 gen --provider runninghub --workflow jinyu-hybrid \
   --prompt-file ./s01.txt --approve-digest "<preflight 返回的 approve_digest>" --json
 ```
 
-**CLI 接口确定性校验口径（仅用于排查 `preflight` 阻断与素材编号对齐，非完整写词教程；写词请使用官方 `h3-prompt-writing` Skill）**：
-- **零参考素材（`--task t2v` → `t2va` 英文三段式）**：直接以 `integrated_multimodal_description:`（内含 `[Shot 1]`）→ `overall_soundscape:` → `non_diegetic_music:` 顺序编写，首行不要加多余前置文本。
+**CLI 提示词结构校验口径与参数行为（仅用于排查 `preflight` 阻断/警告与素材编号对齐，非完整写词教程；写词请使用官方 `h3-prompt-writing` Skill）**：
+- **零参考素材（`--task t2v` → `t2va` 英文三段式）**：直接以 `integrated_multimodal_description:`（内含 `[Shot 1]`）→ `overall_soundscape:` → `non_diegetic_music:` 顺序编写，首行建议不加多余前置文本。
 - **常规参考素材（传 `--image` / `--audio` / `--video` → `--task r2v` → `ref2va` 英文六段式）**：首行必须直接以 `subject_definitions:` 开头，依次写齐 `subject_definitions:` → `summary:` → `retention_analysis:` → `detailed_description:`（内含 `[Shot 1]`）→ `overall_soundscape:` → `non_diegetic_music:`；单图参考在 RunningHub / 晨羽按次请用 `--task r2v`（不要传 `--first-frame`）。
 - **受管 ComfyUI 单独首帧（传 `--first-frame` → 自动推断 `--task i2v` → `i2va` 英文三段式）**：仅 `colab-comfy` / `chenyu-comfy` 支持 `--first-frame`（不要同时传 `--task r2v`）；首行必须包含官方首帧对齐指令（含 `0.00 seconds` 与 `<Picture 1>`，如 `The video starts at 0.00 seconds with <Picture 1>.`），随后依次写齐 `integrated_multimodal_description:`（含 `[Shot 1]`）→ `overall_soundscape:` → `non_diegetic_music:`。
 - **引用编号对齐**：重复传入的 `--image` 按顺序对应 `<Picture 1>`, `<Picture 2>`...；重复传入的 `--video` 按顺序对应 `<Video 1>`, `<Video 2>`...；当同时传入有伴音参考视频与独立音频时，视频伴音排在 `<Audio 1>`，独立音频依次顺延（静音参考视频请加 `--mute-reference-video`）。
-- **无负向词与去配乐**：用可见/可听的正向描述，避免在正文写 `no music` / `without text` 等负面措辞；需要纯干声无 BGM 时加 `--no-music`（且 `non_diegetic_music:` 写 `N/A`）。
+- **无负向词与 `--no-music` 行为**：正文建议用可见/可听的正向描述，避免 `no music` / `without text` 等疑似负向措辞；传入 `--no-music` 时，若提示词缺失 `non_diegetic_music:` 段会由 CLI 自动补为 `N/A`，仅当提示词显式写了非 `N/A` 配乐描述时才因冲突被拒。
+- **阻断 vs 警告边界**：段落结构/顺序错误、空段、`ref2va` 首行非 `subject_definitions:`、`i2va` 缺失首帧对齐指令、镜头编号/切镜时间戳越界及素材引用编号越界会由 `preflight` **确定性阻断**；`t2va` 多余前置文本、正文疑似负向措辞、非 `N/A` 配乐以及中/日/韩（CJK）台词烧字幕提醒属于**非阻断警告（`warn`）**。
 
 ## 6. 按需查阅通道细则
 

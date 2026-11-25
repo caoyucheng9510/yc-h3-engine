@@ -6,13 +6,13 @@
 
 - **适用**：不赶时间的低成本零星补镜（按公开双钱包费率折算，5s 推理样本约 ¥0.29–¥0.34）。
 - **双钱包要求**：算力卡支付 5090 算力费（`0.12 CNY/运行分钟`），现金余额支付创作者费（`0.03 CNY/次`），两者均须有足够余额。
-- **审查排队预期与超时续拉**：平台内容审查排队等待属于平台端波动（平台持续优化中），等待期不扣算力费，但平台无远端取消接口（`jobs cancel` 不可用）。CLI 默认轮询超时上限已放宽至 **60 分钟（`3600s`）**；若因排队波动超时返回 `task_not_completed`，任务仍在远端排队或生成中、不会丢失也不会重复扣费，后续直接用 `yc-h3 jobs resume <task_key>` 或 `yc-h3 jobs fetch <task_key>` 拉回即可，不要重复提交。
+- **审查排队预期与超时续拉**：平台内容审查排队等待属于平台端波动，等待期不扣算力费，但平台无远端取消接口（`jobs cancel` 不可用）。CLI 默认轮询超时上限已放宽至 **60 分钟（`3600s`）**；若超时返回 `task_not_completed`，说明原订单已受理且远端尚未完成，CLI 已停止本次等待并保留本地断点，后续使用 `yc-h3 jobs resume <task_key>` 继续轮询或 `yc-h3 jobs fetch <task_key>` 单次查取可沿用同一订单拉取（不重复下单，禁止擅自 `--force-new`，最终状态仍以远端返回为准）。
 - **本地实跑自校准预估**：
   - 无本地样本时，预检仅展示公开费率（`estimate_source: "uncalibrated"`，`estimate_samples: 0`，`estimated_run_seconds` / `estimated_wall_seconds` / `estimated_cny` 均为 `null`）。
-  - 成片交付后，CLI 会自动将脱敏观测写入 `<data_dir>/perf/observations.jsonl`；后续 `preflight` 按同工作流、同卡型（`gpu_model`）的近期本地样本自动拆分估算：
-    - `estimated_run_seconds`：按成片秒数归一化估算纯推理耗时，用于按公开费率（算力卡 + 创作者费）估算 `estimated_cny`；
-    - `estimated_wall_seconds`：取近期端到端墙钟耗时中位数，随平台排队优化自动下降；
-    - `facts` 中同时标明 `estimate_source: "local_history"` 与 `estimate_samples`。
+  - 成片交付后，CLI 会尽力将脱敏观测写入 `<data_dir>/perf/observations.jsonl`；后续 `preflight` 优先按同工作流、同卡型（`gpu_model`）的近期本地样本拆分估算（同卡型无匹配时可回退至同工作流、同无参考视频类别的近期样本）：
+    - `estimated_run_seconds`：按成片秒数归一化估算纯推理耗时，用于按公开费率（算力卡 + 创作者费）估算 `estimated_cny`；若运行耗时样本缺失，亦可用带实扣记录的历史样本按成片秒数拟合 `estimated_cny`；
+    - `estimated_wall_seconds`：取近期端到端墙钟耗时中位数（记至首次查得远端成功，不含本地下载与校验），随近期实测波动自动更新；
+    - `facts` 中同时标明 `estimate_source: "local_history"` 与 `estimate_samples`（单项缺样本时对应字段为 `null`）。
 - **规格与约束**：
   - 工作流：`jinyu-hybrid`（默认）与 `jinyu-combat`（内置公开工作流 `wf_f8b8f8ee12000cebc6bf`，无需复制）。
   - 任务：`r2v`（默认，至少 1 图或 1 音）或 `t2v`；**不支持 `--video`、`--first-frame`、小数 `--seconds`、`--seed`、`--steps`、`--width`、`--height`、`--task i2v`、`--trim-to-requested-seconds`**。
@@ -42,7 +42,7 @@ yc-h3 gen --provider chenyu --workflow jinyu-hybrid \
   - 建机前冻结绝对截止时间，建机回执丢失时在当前命令内自动认领并挂平台定时停机与空闲销毁护栏；若进程在挂护栏前被强杀/断电，务必运行 `yc-h3 gpu reconcile --backend chenyu` 或登录晨羽网页端核查。
   - 权重默认缓存在持久盘 `/usrdata/yc_h3_engine/models`。
   - **存镜像两步审批与防丢片**：存在可保存的受管运行实例且计划生成成功时，首次不带摘要执行 `gpu save-image` 返回退出码 `2` 并向 stderr 输出错误 JSON（摘要在 `preflight.approve_digest`；若实例已停或有待核对状态会先阻断退出）；执行时会在生命周期锁内核对远端作业列表与本地多版本交付证明，若存在未取回成片直接阻断并给出 `yc-h3 jobs fetch <task_key> --remote-job-id <id>` 领取命令。
-- **本地实跑自校准预估**：成片交付后自动记录脱敏观测至 `<data_dir>/perf/observations.jsonl`；单镜 `preflight` 优先使用精确 `workload_key` 本地样本（`estimate_source: "local_history_exact"`），跨时长等无精确样本时自动回退至同卡型、同工作流、同参考视频类别的暖跑归一化估算（`estimate_source: "local_history_normalized"`，含 `estimate_samples`、`estimate_seconds`、`estimated_wall_seconds`、`estimated_quantity`、`estimated_cny`），均无样本时返回 `estimate_source: "uncalibrated"`。
+- **本地实跑自校准预估**：单镜 `preflight` 优先读取本地单作业 `perf.json` 归档，按 `workload_key` 精确匹配计算中位数（`estimate_source: "local_history_exact"`，暖跑优先、冷跑可用）；无有效精确耗时时，再回退读取 `<data_dir>/perf/observations.jsonl`（由成片交付后尽力写入；指定历史远端作业补领不会新写观测）按同卡型、同工作流、同参考视频类别做暖跑归一化估算（`estimate_source: "local_history_normalized"`，含 `estimate_samples`、`estimate_seconds`、`estimated_wall_seconds`、`estimated_quantity`、`estimated_cny`）；均无可用样本时返回 `estimate_source: "uncalibrated"`。
 
 ```bash
 # 1) 规划并经批准开机（从 gpu plan 返回的 digest 字段取得摘要；--setup 默认装齐金鱼插件）

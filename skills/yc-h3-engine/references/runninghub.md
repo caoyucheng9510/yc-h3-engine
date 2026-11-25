@@ -20,9 +20,10 @@
   - `--seconds` 支持 `0.2–15.0`（小数或整数，默认 `5`），输出帧数按 24fps 向上对齐 `17k + 5` 网格。
   - `--steps` 默认 `12`（范围 `7–100`）；`--seed` 默认 `-1`（随机）；支持 `--no-music` 与 `--save-last-frame`。
 - **本地实跑自校准预估**：
-  - 无本地样本且符合默认 `16:9`（`1664×928`）/ `12` 步 / Plus 48GB / 无参考视频时，预检沿用单样本初始基线（`estimate_source: "initial_baseline"`，`estimate_samples: 0`，`estimated_wall_seconds: null`）；不符合上述默认条件且无本地样本时返回 `estimate_source: "uncalibrated"`。
-  - 每次成片交付成功后，CLI 会自动将脱敏运行观测沉淀至 `<data_dir>/perf/observations.jsonl`；后续 `preflight` 优先按本地同工作流（`workflow`）、同机型（`instance_type`）、同是否含参考视频（`has_ref_video`）的近期样本拟合预计耗时与积分（`estimate_source: "local_history"`，含 `estimate_samples`、`estimated_run_seconds`、`estimated_wall_seconds`、`estimated_reference_points`，以及配置 `RUNNINGHUB_CNY_PER_POINT` 后的 `estimated_cny`）。
-  - 包含参考视频或非默认画幅在积累本地样本后也能给出估算；所有预估仅供参考，最终实扣以平台返回的 `chargedPoint` 为准。
+  - 成片交付成功后，CLI 会尽力将脱敏运行观测写入 `<data_dir>/perf/observations.jsonl`（旧 `r2v` 断点缺失是否含参考视频标记时不入库）。
+  - 后续 `preflight` 优先按本地同工作流（`workflow`）、同机型（`instance_type`）、同是否含参考视频（`has_ref_video`）的近期样本拟合；同机型无匹配时可回退至同工作流、同参考视频类别的近期样本。仅当历史能拟合出运行耗时（`estimated_run_seconds`）或参考积分（`estimated_reference_points`）时才采用 `estimate_source: "local_history"`（附 `estimate_samples`、`estimated_wall_seconds` 及配置 `RUNNINGHUB_CNY_PER_POINT` 后的 `estimated_cny`）。
+  - 无可用历史样本（含仅有墙钟样本）时，符合默认 `16:9`（`1664×928`）/ `12` 步 / Plus 48GB / 无参考视频则沿用单样本初始基线（`estimate_source: "initial_baseline"`，`estimate_samples: 0`，`estimated_wall_seconds: null`），否则返回 `estimate_source: "uncalibrated"`。
+  - 包含参考视频或非默认画幅在积累本地样本后也能给出估算；所有预估仅供参考，最终结算以平台实扣为准（优先读取 `chargedPoint`，亦兼容 `consumePoint` / `consumePoints`）。
 
 ## 3. 常用命令
 

@@ -47,7 +47,7 @@
   - 现行 `jinyu-hybrid` 默认权重清单合计约 **53.8 GB**（在 2026-11-25 Colab `A100-80` 实测冷跑中，权重准备耗时约 **18.8 分钟 / `1129.70s`**；2026-11-20 上游 `G4-96` 对不同旧模型及增量包曾观测到匿名 HuggingFace 吞吐 `141–194 MB/s`，实际耗时受云端机房网络与复用量影响）。
   - 晨羽独占 GPU 将权重缓存在持久盘 **`/usrdata/yc_h3_engine/models`**（平台「我的镜像」与 `/usrdata` 存储各有 50 GB 免费额度，超额按官方公布 `¥0.00036/GB/小时` 计费）。首次部署完成后可经两步审批保存私有镜像加速后续冷启（先执行 `yc-h3 gpu save-image --backend chenyu --json` 获取错误 JSON 中的 `preflight.approve_digest`，核对确认后附加 `--approve-digest` 再执行）。
 - **台账折算生效时机**：在 `~/.yc-h3-engine/.env` 配置 `RUNNINGHUB_CNY_PER_POINT` 与 `COLAB_CNY_PER_CU` 后，仅作用于**后续预检估算与新入账流水**的 `est_cny`；`yc-h3 ledger summary` 汇总的是流水写入时已记录的 `est_cny`，修改 `.env` 不会回算历史旧流水。
-- **本地实跑自校准预估**：四通道成片交付后会自动将脱敏运行观测（不含提示词、路径或凭据）写入 `<data_dir>/perf/observations.jsonl`，`preflight` 优先结合用户本地近期实跑历史估算耗时与费用，无本地样本时回退初始基线或未校准状态，使估算随使用自动贴近自身账号/卡型与当下平台排队速度。各通道 `facts.estimate_source` 口径如下：
-  - `runninghub`：`local_history`（本地同工作流/机型/是否含参考视频样本）→ `initial_baseline`（无本地样本且符合默认 `16:9` / `12` 步 / Plus / 无参考视频）→ `uncalibrated`；
-  - `chenyu`：`local_history`（本地同工作流/卡型样本，拆分估算按秒归一化的 `estimated_run_seconds` 与近期中位数 `estimated_wall_seconds`）→ `uncalibrated`；
-  - `chenyu-comfy` / `colab-comfy`：`local_history_exact`（精确 `workload_key` 本地样本）→ `local_history_normalized`（同卡型、同工作流、同参考视频类别的暖跑归一化估算）→ `uncalibrated`。
+- **本地实跑自校准预估**：四通道成片交付后会尽力将脱敏运行观测（不含提示词、路径或凭据）写入 `<data_dir>/perf/observations.jsonl`（受管 ComfyUI 指定历史远端作业补领不新写观测，旧 RunningHub `r2v` 断点缺失是否含视频标记时不入库），`preflight` 优先结合本地实跑历史估算耗时与费用，无可用样本时回退初始基线或未校准状态（缺失单项为 `null`）。各通道 `facts.estimate_source` 口径如下：
+  - `runninghub`：`local_history`（读 `observations.jsonl`，优先同工作流/机型/是否含参考视频，同机型无匹配时可回退至同工作流/同参考视频类别，且须能拟合出运行耗时或积分才采用；最终结算以平台实扣为准，优先 `chargedPoint`，兼容 `consumePoint`/`consumePoints`）→ `initial_baseline`（无可用历史样本且符合默认 `16:9` / `12` 步 / Plus / 无参考视频）→ `uncalibrated`；
+  - `chenyu`：`local_history`（读 `observations.jsonl`，优先同工作流/卡型，无匹配时可回退至同工作流/同无参考视频类别；拆分估算按秒归一化的 `estimated_run_seconds` 与近期墙钟中位数 `estimated_wall_seconds`——记至首次查得远端成功、不含本地下载与校验；运行耗时缺失时亦可由实扣样本拟合 `estimated_cny`）→ `uncalibrated`；
+  - `chenyu-comfy` / `colab-comfy`：`local_history_exact`（读本地单作业 `perf.json` 归档，按 `workload_key` 精确匹配，暖跑优先、冷跑可用）→ `local_history_normalized`（无有效精确耗时时回退读 `observations.jsonl`，按同卡型、同工作流、同参考视频类别做暖跑归一化；Colab 按 `billing_rate_per_hour` 折算单镜 CU，`COLAB_CNY_PER_CU` 仅用于人民币折算）→ `uncalibrated`。
