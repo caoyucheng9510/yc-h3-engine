@@ -6,7 +6,13 @@ compatibility: 跨平台 CLI（Python >= 3.12、FFmpeg/FFprobe）；RunningHub�
 
 # `yc-h3-engine`：MiniMax-H3 视频生成执行入口
 
-本 Skill 只负责**生视频执行、算力管理与费用台账**，不替代用户现有项目中的编剧、分镜、生图或剪辑流程。
+## 输入契约与职责边界
+
+- **只专注 MiniMax-H3 生视频执行**：本 Skill 负责算力管理、只读预检与费用门禁、提交生成、断点恢复与费用台账；**不负责**上游编剧、分镜、生图、提示词创作或下游剪辑。
+- **固定输入契约**：调用前须具备三类就绪输入——**准备好的本地参考素材**（图片 / 音频 / 参考视频 / 首帧）+ **规范化的 MiniMax-H3 提示词** + **生成规格参数**（通道、工作流、时长、画幅、输出路径等）。
+- **官方写词 Skill 协作引导**：本 Skill 不内置非官方写词兜底模板。当用户只提供了口语化中文描述或剧情想法、尚未形成规范 H3 提示词时：
+  - 优先交由已安装的官方提示词 Skill **`h3-prompt-writing`**（或用户指定的写词 Skill）生成规范提示词后，再调用 `yc-h3`；
+  - 若用户尚未安装写词 Skill，明确引导其先安装官方 `h3-prompt-writing` Skill（`https://github.com/MiniMax-AI/MiniMax-H3/tree/main/.agents/skills/h3-prompt-writing`），生成规范提示词后再继续执行生视频。
 
 ## 1. CLI 调用方式
 
@@ -40,23 +46,29 @@ compatibility: 跨平台 CLI（Python >= 3.12、FFmpeg/FFprobe）；RunningHub�
 
 - 省略 `--provider` 时，CLI 会按可用性与**本次请求能力**自动选路（例如传了 `--video`、小数 `--seconds`、`--seed`、`--steps`、`--trim-to-requested-seconds` 时自动跳过 `chenyu` 按次 API）。
 
-## 4. 费用门禁、摘要来源与退出码（铁律）
+## 4. 费用门禁、预估汇报与断点恢复（铁律）
 
 1. **先预检，再确认，后提交（三类摘要字段来源须准确区分）**：
    - **视频生成**：先执行 `yc-h3 preflight ... --json`，读取返回顶层的 **`approve_digest`**；用户批准后，**原样保持全部参数（含 `--tag`）不变**，追加 `--approve-digest <approve_digest>` 执行 `yc-h3 gen`。
    - **受管 GPU 开机 / 改时限**：先执行 `yc-h3 gpu plan --backend colab|chenyu ... --json`，读取返回顶层的 **`digest`**；用户批准后，原样参数追加 `--approve-digest <digest>` 执行 `yc-h3 gpu up`。
    - **晨羽保存私有镜像**：在存在可保存的受管运行实例时，先不带摘要执行 `yc-h3 gpu save-image --backend chenyu --json`（计划生成成功后返回退出码 `2` 并向 stderr 输出错误 JSON；若实例已停或有待核对状态会先以退出码 `3` 退出），读取错误 JSON 中的 **`preflight.approve_digest`**；用户批准后，原样追加 `--approve-digest <approve_digest>` 执行（此时在生命周期锁内核验远端与本地交付证明，若存在未交付作业将以退出码 `3` 阻断并给出定向 `jobs fetch` 命令）。
    - 严禁篡改审批后素材、严禁静默绕过预检或私自切换付费通道。
-2. **断点恢复与单次 `--force-new`**：
+2. **本地实跑自校准预估与汇报要求**：
+   - 四通道成片交付后会自动将脱敏运行观测（不含提示词、本地路径或凭据）静默记录到 `<data_dir>/perf/observations.jsonl`；后续 `preflight` 会结合本地历史自动估算预计耗时与费用，结果位于返回 JSON 的 `facts` 中：
+     - 通用来源字段：`estimate_source`（`local_history` / `local_history_exact` / `local_history_normalized` / `initial_baseline` / `uncalibrated`）与 `estimate_samples`；
+     - 耗时与费用字段：`estimated_wall_seconds`、`estimated_run_seconds`（`runninghub` / `chenyu`）、`estimate_seconds`（`chenyu-comfy` / `colab-comfy`）、`estimated_reference_points`（`runninghub`）、`estimated_quantity`（`chenyu-comfy` / `colab-comfy`）与 `estimated_cny`。
+   - Agent 在请用户审批确认时，须如实向用户说明**预估来源**（本地实跑 `N` 单 / 初始参考基线 / 暂无估算）以及**预计耗时与费用**，待用户确认后再提交。
+3. **断点恢复、晨羽超时续拉与单次 `--force-new`**：
    - 建单断线或超时后，先执行 `yc-h3 jobs list --json` 查看状态，按 `yc-h3 jobs resume <task_key> --json` 或 `yc-h3 jobs fetch <task_key> --json` 恢复领取（可加 `--out <new_path>` 换落盘路径、加 `--remote-job-id <id>` 补领历史作业）；
-   - 只有在确认要重做时才使用 `--force-new` 重新预检审批；同一次 `--force-new` 审批只可消费一次，防止断线重跑重复扣费。
-3. **统一退出码**：
+   - **晨羽按次超时友好安抚与续拉**：`chenyu` 按次 API 默认轮询超时已放宽至 **60 分钟（`3600s`）**；若因平台排队审查波动仍返回 `task_not_completed`，须明确告知用户**任务仍在远端排队/生成中，未丢失也不会重复扣费**，稍后执行 `yc-h3 jobs resume <task_key>` 或 `yc-h3 jobs fetch <task_key>` 取回即可，**禁止擅自使用 `--force-new` 重下单**；
+   - 只有在用户确认要重做时才使用 `--force-new` 重新预检审批；同一次 `--force-new` 审批只可消费一次，防止断线重跑重复扣费。
+4. **统一退出码**：
    - `0`：成功 / 预检 `pass`
    - `2`：需人工审批 / 预检 `warn`（须带实时 `--approve-digest`）
    - `3`：预检 `block` / 会话或断点冲突 / `ambiguous` / 原生 Windows 调用 Colab 拦截
    - `1`：运行期异常或参数错误
 
-## 5. 最短命令模板与 H3 提示词规范
+## 5. 最短命令模板与 CLI 提示词结构校验口径
 
 ```bash
 # 1) 只读预检（提示词推荐写入 UTF-8 文本文件用 --prompt-file 传入；--tag 须与 gen 保持一致）
@@ -73,7 +85,7 @@ yc-h3 gen --provider runninghub --workflow jinyu-hybrid \
   --prompt-file ./s01.txt --approve-digest "<preflight 返回的 approve_digest>" --json
 ```
 
-**MiniMax-H3 提示词结构规范（CLI 代码按以下确定性规则校验，不合规会被预检阻断）**：
+**CLI 接口确定性校验口径（仅用于排查 `preflight` 阻断与素材编号对齐，非完整写词教程；写词请使用官方 `h3-prompt-writing` Skill）**：
 - **零参考素材（`--task t2v` → `t2va` 英文三段式）**：直接以 `integrated_multimodal_description:`（内含 `[Shot 1]`）→ `overall_soundscape:` → `non_diegetic_music:` 顺序编写，首行不要加多余前置文本。
 - **常规参考素材（传 `--image` / `--audio` / `--video` → `--task r2v` → `ref2va` 英文六段式）**：首行必须直接以 `subject_definitions:` 开头，依次写齐 `subject_definitions:` → `summary:` → `retention_analysis:` → `detailed_description:`（内含 `[Shot 1]`）→ `overall_soundscape:` → `non_diegetic_music:`；单图参考在 RunningHub / 晨羽按次请用 `--task r2v`（不要传 `--first-frame`）。
 - **受管 ComfyUI 单独首帧（传 `--first-frame` → 自动推断 `--task i2v` → `i2va` 英文三段式）**：仅 `colab-comfy` / `chenyu-comfy` 支持 `--first-frame`（不要同时传 `--task r2v`）；首行必须包含官方首帧对齐指令（含 `0.00 seconds` 与 `<Picture 1>`，如 `The video starts at 0.00 seconds with <Picture 1>.`），随后依次写齐 `integrated_multimodal_description:`（含 `[Shot 1]`）→ `overall_soundscape:` → `non_diegetic_music:`。

@@ -32,6 +32,7 @@ yc-h3 gpu up --backend colab --session h3 --gpu AUTO --setup \
 
 - **槽位**：9 图 + 3 音频 + 3 视频（合计 `<= 12`；有伴音参考视频同时占用音频槽与总量槽，并与独立音频共用累计 `<= 15s` 上限；支持 `--first-frame` 走 `i2v`、`--mute-reference-video`、`--trim-to-requested-seconds`）。
 - **审批要求**：每次 `gen` 须先 `preflight` 获取实时 `approve_digest`（涵盖 `pass` 与 `warn`），且两步参数（含 `--tag`）须完全一致。
+- **本地实跑自校准预估**：成片交付后自动将脱敏观测记录到 `<data_dir>/perf/observations.jsonl`；单镜 `preflight` 优先使用精确 `workload_key` 样本（`estimate_source: "local_history_exact"`），跨时长等无精确样本时自动回退至同卡型、同工作流、同参考视频类别的暖跑归一化估算（`estimate_source: "local_history_normalized"`），并按当前会话实时 `CU/hr`（`billing_rate_per_hour`）及可选 `COLAB_CNY_PER_CU` 估算单镜耗时与费用（`estimate_seconds`、`estimated_wall_seconds`、`estimated_quantity`、`estimated_cny`、`estimate_samples`）；均无样本时为 `estimate_source: "uncalibrated"`。
 - **释放保护**：存在活跃受管会话时，`yc-h3 daemon stop` 默认拒绝退出，须先 `yc-h3 gpu stop --backend colab`，或显式加 `--stop-colab` / `--detach-colab`。
 
 ```bash
