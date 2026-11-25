@@ -6,14 +6,17 @@ import json
 import os
 import subprocess
 import sys
+import threading
+import time
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
 from yc_h3 import cli
 from yc_h3.config import read_env_file
 from yc_h3.providers import registry
-from yc_h3.providers.base import ArtifactResult, GenerationRequest, ProbeResult
+from yc_h3.providers.base import ArtifactResult, GenerationRequest, ProbeResult, ProviderError
 from yc_h3.tasks_store import TaskStore
 from tests.test_runninghub_provider import TEXT_PROMPT, make_config
 
@@ -21,7 +24,8 @@ from tests.test_runninghub_provider import TEXT_PROMPT, make_config
 def test_init_create_preserve_and_update(tmp_path, monkeypatch, capsys):
     monkeypatch.chdir(tmp_path)
     credential = "offline-first-secret"
-    monkeypatch.setattr(sys, "stdin", io.StringIO(json.dumps({"RUNNINGHUB_API_KEY": credential, "CUSTOM_KEY": "retained"})))
+    supplied = {"RUNNINGHUB_API_KEY": credential, "CHENYU_API_KEY": "  ", "CUSTOM_KEY": "retained"}
+    monkeypatch.setattr(sys, "stdin", io.StringIO(json.dumps(supplied)))
     command = ["init", "--local", "--from-stdin-json", "--json"]
     assert cli.main(command) == 0
     assert json.loads(capsys.readouterr().out)["status"] == "created"
@@ -32,7 +36,9 @@ def test_init_create_preserve_and_update(tmp_path, monkeypatch, capsys):
     updated = "offline-second-secret"
     monkeypatch.setattr(sys, "stdin", io.StringIO(json.dumps({"RUNNINGHUB_API_KEY": updated})))
     assert cli.main(command) == 0
-    assert json.loads(capsys.readouterr().out)["status"] == "kept"
+    kept = json.loads(capsys.readouterr().out)
+    assert kept["status"] == "kept"
+    assert kept["configured_keys"] == ["RUNNINGHUB_API_KEY"]
     assert before == path.read_bytes()
     monkeypatch.setattr(sys, "stdin", io.StringIO(json.dumps({"RUNNINGHUB_API_KEY": updated})))
     assert cli.main([*command, "--update"]) == 0
@@ -68,18 +74,25 @@ def test_doctor_and_workflows_are_read_only(tmp_path, monkeypatch, capsys):
     assert not (tmp_path / "absent").exists()
 
 
-@pytest.mark.parametrize(("last_available", "inputs", "params", "expected"), [
-    ("colab-comfy", {}, {}, "colab-comfy"),
-    ("chenyu-comfy", {"images": ["one.png"]}, {}, "chenyu-comfy"),
-    ("runninghub", {"videos": ["ref.mp4"]}, {}, "runninghub"),
-    ("chenyu", {}, {}, "chenyu"),
-    ("chenyu", {"images": ["one.png"]}, {"seconds": 5}, "chenyu"),
-    ("chenyu", {"videos": ["ref.mp4"]}, {}, None),
-    ("chenyu", {}, {"seconds": 5.5}, None),
-    ("chenyu", {}, {"seed": 7}, None),
-    ("chenyu", {}, {"steps": 12}, None),
+@pytest.mark.parametrize(("last_available", "inputs", "params", "expected", "expected_skips"), [
+    ("colab-comfy", {}, {"aspect": "16:9"}, "colab-comfy", {}),
+    ("chenyu-comfy", {"images": ["one.png"]}, {}, "chenyu-comfy", {}),
+    ("runninghub", {"videos": ["ref.mp4"]}, {}, "runninghub", {}),
+    ("chenyu", {}, {}, "chenyu", {}),
+    ("chenyu", {"images": ["one.png"]}, {"seconds": 5}, "chenyu", {}),
+    ("chenyu", {"videos": ["ref.mp4"]}, {}, None, {"chenyu": "unsupported_videos"}),
+    ("chenyu", {}, {"seconds": 5.5}, None, {"chenyu": "unsupported_fractional_seconds"}),
+    ("chenyu", {}, {"seed": 7}, None, {"chenyu": "unsupported_seed"}),
+    ("chenyu", {}, {"steps": 12}, None, {"chenyu": "unsupported_steps"}),
+    ("chenyu-comfy", {}, {"trim_to_requested_seconds": True}, "chenyu-comfy", {}),
+    ("runninghub", {}, {"trim_to_requested_seconds": True}, None, {
+        "runninghub": "unsupported_trim_to_requested_seconds", "chenyu": "unsupported_trim_to_requested_seconds",
+    }),
+    ("colab-comfy", {}, {"aspect": "21:9"}, "chenyu", {
+        "colab-comfy": "unsupported_aspect", "chenyu-comfy": "unsupported_aspect", "runninghub": "unsupported_aspect",
+    }),
 ])
-def test_capability_aware_provider_matrix(tmp_path, monkeypatch, last_available, inputs, params, expected):
+def test_capability_aware_provider_matrix(tmp_path, monkeypatch, last_available, inputs, params, expected, expected_skips):
     config = make_config(tmp_path, monkeypatch)
     monkeypatch.setattr(registry.sys, "platform", "linux")
     checked = []
@@ -98,11 +111,159 @@ def test_capability_aware_provider_matrix(tmp_path, monkeypatch, last_available,
     route = registry.resolve_provider(request, config)
     assert (route.provider.provider_id if route.provider else None) == expected
     assert request.workflow == "jinyu-hybrid"
-    if expected is None:
-        assert route.skipped[-1]["reason"].startswith("unsupported_")
-        assert "chenyu" not in checked
+    skipped = {row["provider_id"]: row["reason"] for row in route.skipped}
+    assert expected_skips.items() <= skipped.items()
+    assert not expected_skips.keys() & set(checked)
     with pytest.raises(ValueError, match="--workflow jinyu-hybrid"):
         registry.normalize_workflow("h3-jinyu-hybrid", "chenyu")
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="Colab 运行态需 macOS、Linux 或 WSL2")
+@pytest.mark.parametrize(("action", "stream_result", "exit_code", "error_code", "message"), [
+    ("up", (0, ""), 0, None, None),
+    ("up", (1, "service unavailable"), 1, "local_task_failed", "colab new 失败"),
+    ("up", (124, "synthetic timeout"), 3, "needs_reconcile", "新端点"),
+    ("stop", (0, ""), 0, None, None),
+    ("stop", (1, "synthetic stop failure"), 1, "local_task_failed", "colab sessions 仍有会话"),
+])
+def test_colab_gpu_cli_waits_for_background_result(tmp_path, monkeypatch, capsys, action, stream_result,
+                                                   exit_code, error_code, message):
+    from tests.test_local_colab import FakeColab
+    from yc_h3.local import app as local_app
+    from yc_h3.local.config import Settings
+    from yc_h3.local.server import make_server
+    from yc_h3.local.tasks import Task
+    from yc_h3.local.tunnel import Tunnel
+
+    config = make_config(tmp_path, monkeypatch)
+    monkeypatch.setattr(cli, "load_config", lambda **kwargs: config)
+    monkeypatch.setattr(cli, "_COLAB_TASK_POLL_INTERVAL", 0.01)
+    monkeypatch.setattr(cli, "_COLAB_TASK_TIMEOUTS", {action: 5})
+    # Skip the daemon's stop retry delay while keeping every session check.
+    monkeypatch.setattr(local_app, "time", SimpleNamespace(time=time.time, sleep=lambda _: None))
+    settings = Settings(engine_config=config)
+    fake_colab = FakeColab(settings)
+    app = local_app.App(settings=settings, colab=fake_colab, tunnel=Tunnel(fake_colab))
+    session = fake_colab.rows[0].copy()
+    name = session["name"]
+    arguments = ["gpu", action, "--backend", "colab", "--session", name, "--json"]
+    if action == "up":
+        fake_colab.rows.clear()
+        plan = app.gpu_plan(session=name, gpu="G4")
+        arguments.extend(["--gpu", "G4", "--no-connect", "--approve-digest", plan["digest"]])
+    else:
+        settings.update({"managed_sessions": {name: {
+            "host": session["host"], "gpu": "G4", "allocated_at": time.time() - 60,
+            "balance_before": 20, "cu_rate": 2,
+        }}})
+
+    first_poll = threading.Event()
+    snapshots = []
+    original_snapshot = Task.to_dict
+
+    def observe_snapshot(task):
+        snapshot = original_snapshot(task)
+        snapshots.append(snapshot)
+        first_poll.set()
+        return snapshot
+
+    stream_calls = []
+
+    def stream(args, task, timeout):
+        stream_calls.append(args[:3])
+        assert first_poll.wait(5)
+        if stream_result[0] == 0:
+            fake_colab.rows[:] = [session] if action == "up" else []
+        return stream_result
+
+    monkeypatch.setattr(Task, "to_dict", observe_snapshot)
+    monkeypatch.setattr(fake_colab, "stream", stream)
+    with make_server(app, host="127.0.0.1", port=0) as server:
+        thread = threading.Thread(target=server.serve_forever, kwargs={"poll_interval": 0.01}, daemon=True)
+        thread.start()
+        try:
+            assert cli.main([*arguments, "--host", "127.0.0.1", "--port", str(server.server_port)]) == exit_code
+        finally:
+            first_poll.set()
+            server.shutdown()
+            thread.join(timeout=5)
+
+    captured = capsys.readouterr()
+    assert stream_calls == [["new" if action == "up" else "stop", "-s", name]]
+    assert snapshots[0]["status"] == "running"
+    terminal = snapshots[-1]
+    if exit_code == 0:
+        result = json.loads(captured.out)
+        assert result == {**terminal, "task_id": terminal["id"]}
+        assert result["status"] == "done"
+        assert result["result"]["session"] == (session if action == "up" else name)
+    else:
+        assert captured.out == ""
+        error = json.loads(captured.err.splitlines()[-1])
+        assert error["task_id"] == terminal["id"] and error["status"] == terminal["status"] == "error"
+        assert error["exit_code"] == exit_code and error["error"] == error_code and message in error["message"]
+        if action == "stop":
+            assert fake_colab.sessions() == [session]
+            assert name in settings.get("managed_sessions")
+            assert not (config.data_dir / "ledger" / "usage.jsonl").exists()
+
+
+@pytest.mark.parametrize(("action", "setup", "timeout_key"), [
+    ("stop", False, "stop"), ("up", False, "up"), ("up", True, "setup"),
+])
+def test_colab_gpu_cli_times_out(tmp_path, monkeypatch, capsys, action, setup, timeout_key):
+    config = make_config(tmp_path, monkeypatch)
+    monkeypatch.setattr(cli, "load_config", lambda **kwargs: config)
+    timeouts = {"stop": 3, "up": 18, "setup": 36}
+    monkeypatch.setattr(cli, "_COLAB_TASK_TIMEOUTS", timeouts)
+    monkeypatch.setattr(cli, "_COLAB_TASK_POLL_INTERVAL", 2)
+    now = 0
+
+    def sleep(seconds):
+        nonlocal now
+        now += seconds
+
+    monkeypatch.setattr(cli, "time", SimpleNamespace(monotonic=lambda: now, sleep=sleep))
+    polls = []
+
+    def request(method, path, *, timeout, payload=None):
+        if method == "POST":
+            assert path == f"/api/local/gpu/{action}"
+            return 200, {"task_id": "t_pending"}
+        assert (method, path) == ("GET", "/api/local/tasks/t_pending")
+        polls.append(timeout)
+        return 200, {"id": "t_pending", "status": "running"}
+
+    client = SimpleNamespace(
+        health=lambda: {"ok": True, "app": "yc-h3-engine", "data_dir_hash": config.data_dir_hash,
+                        "config_identity": config.config_identity},
+        _request_json=request,
+    )
+    monkeypatch.setattr(cli, "_colab_client", lambda args, config: client)
+    arguments = ["gpu", action, "--backend", "colab", "--json"]
+    assert cli.main([*arguments, "--setup"] if setup else arguments) == 1
+    assert now == timeouts[timeout_key] and polls[0] == min(30, now)
+    error = json.loads(capsys.readouterr().err)
+    assert error["error"] == "local_task_timeout" and error["task_id"] == "t_pending"
+    assert "yc-h3 gpu status" in error["message"] and "yc-h3 gpu reconcile" in error["message"]
+
+
+@pytest.mark.parametrize(("message", "error_code", "exit_code"), [
+    ("approval_required: 需要审批", "approval_required", 2),
+    ("approval_stale: 审批已过期", "approval_stale", 2),
+    ("远端 setup 提交失败 HTTP 403: 缺少或过期的审批摘要", "approval_required", 2),
+    ("请先释放受管会话 yh3-first，再分配 yh3-second", "active_managed_session_exists", 3),
+    ("Colab 当前账号配置与占位不符，请使用分配时的配置核对", "local_task_conflict", 3),
+    ("unmanaged_session: 会话未由本机托管", "unmanaged_session", 3),
+    ("session_host_changed: 会话端点已变化", "session_host_changed", 3),
+    ("session_deadline_or_cancelled: 会话已取消", "session_deadline_or_cancelled", 3),
+    ("foreign_app: 远端服务身份不符", "foreign_app", 3),
+])
+def test_colab_gpu_task_gate_error_codes(message, error_code, exit_code):
+    client = SimpleNamespace(_request_json=lambda *args, **kwargs: (200, {"status": "error", "error": message}))
+    with pytest.raises(ProviderError) as error:
+        cli._wait_for_colab_gpu_task(client, "t_failed", timeout=5)
+    assert (error.value.code, error.value.exit_code, str(error.value)) == (error_code, exit_code, message)
 
 
 def test_jobs_list_only_safe_summary_and_passes_fetch_options(tmp_path, monkeypatch, capsys):

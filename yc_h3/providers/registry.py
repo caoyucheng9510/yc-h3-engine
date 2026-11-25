@@ -93,6 +93,17 @@ def capability_reason(provider_id, request):
         media = supplied(slot)
         if isinstance(media, (list, tuple)) and len(media) > slots[slot]:
             return f"unsupported_{slot}" if not slots[slot] else f"{slot}_slot_limit"
+    if catalog is not None and "trim_to_requested_seconds" in params:
+        return "unsupported_trim_to_requested_seconds"
+    if "aspect" in params:
+        aspect = params["aspect"]
+        if provider_id == "chenyu":
+            options = spec["aspect_options"]
+            supported_aspects = (*options, *options.values())
+        else:
+            supported_aspects = h3.JINYU_ASPECT_SIZES if catalog is None else spec["sizes"]
+        if not isinstance(aspect, str) or aspect not in supported_aspects:
+            return "unsupported_aspect"
     if provider_id == "chenyu":
         if "seed" in params:
             return "unsupported_seed"

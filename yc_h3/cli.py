@@ -7,7 +7,9 @@ import http.client
 import json
 import math
 import sys
+import time
 from pathlib import Path
+from urllib.parse import quote
 
 from . import ledger
 from .config import global_env_path, load_config, read_env_file, update_env_file
@@ -24,6 +26,25 @@ _INIT_KEYS = (
 _SUMMARY_FIELDS = ("task_key", "provider", "state", "workflow", "tag", "remote_job_id", "remote_task_id",
                    "artifact_path", "artifact_sha256", "created_at", "updated_at", "delivered_at", "perf_archived")
 _HISTORY_FIELDS = ("remote_job_id", "status", "delivered_path", "artifact_sha256")
+_COLAB_TASK_POLL_INTERVAL = 1.0
+_COLAB_TASK_TIMEOUTS = {"stop": 300, "up": 1800, "setup": 3600}
+_COLAB_TASK_EXIT_CODES = {
+    "approval_context_required": 2,
+    "approval_required": 2,
+    "approval_stale": 2,
+    "active_managed_session_exists": 3,
+    "foreign_app": 3,
+    "instance_id_changed": 3,
+    "local_task_conflict": 3,
+    "needs_reconcile": 3,
+    "session_deadline_or_cancelled": 3,
+    "session_host_changed": 3,
+    "session_host_mismatch": 3,
+    "session_vanished": 3,
+    "setup_target_mismatch": 3,
+    "unmanaged_session": 3,
+    "unmanaged_session_collision": 3,
+}
 
 
 class ArgumentParser(argparse.ArgumentParser):
@@ -248,7 +269,8 @@ def _init(args):
         existing = read_env_file(target)
         update_env_file(target, {})
         safe_path = load_config(env_file=target).redact(str(target))
-        return {"status": "kept", "path": safe_path, "configured_keys": sorted(key for key in _INIT_KEYS if key in existing)}
+        configured_keys = sorted(key for key in _INIT_KEYS if existing.get(key, "").strip())
+        return {"status": "kept", "path": safe_path, "configured_keys": configured_keys}
     if not args.from_stdin_json and sys.stdin.isatty():
         for key in ("RUNNINGHUB_API_KEY", "RUNNINGHUB_WORKFLOW_ID", "CHENYU_API_KEY"):
             entered = getpass.getpass(f"{key}（留空跳过） ").strip()
@@ -434,6 +456,55 @@ def _daemon(args, config):
     return reply, 0 if reply.get("ok") else 3
 
 
+def _colab_gpu_task_error(task_id, error):
+    message = error if isinstance(error, str) and error else "Colab GPU 后台任务失败"
+    # TaskRegistry preserves code prefixes and legacy guard messages as plain text.
+    code = message.partition(":")[0]
+    if code == "远端 setup 提交失败 HTTP 403":
+        code = "approval_required"
+    elif message.startswith("请先释放受管会话 "):
+        code = "active_managed_session_exists"
+    elif message.startswith(("Colab 当前账号配置与占位不符，", "Colab 本地会话归属已变化，")) or (
+        message.startswith(("会话 ", "Colab 会话 ")) and message.endswith((
+            " 已存在，请重新执行 gpu plan", " 不存在，请先启动会话", " 不存在，请先执行 gpu up",
+            " 的占位已变化，请核对会话归属",
+        ))
+    ):
+        code = "local_task_conflict"
+    exit_code = _COLAB_TASK_EXIT_CODES.get(code, 1)
+    return ProviderError(message, code=code if exit_code != 1 else "local_task_failed",
+                         exit_code=exit_code, details={"task_id": task_id, "status": "error"})
+
+
+def _wait_for_colab_gpu_task(client, task_id, *, timeout):
+    if not isinstance(task_id, str) or not task_id:
+        raise ProviderError("守护进程返回的 Colab GPU 任务 ID 无效", code="local_task_invalid_id")
+    path = "/api/local/tasks/" + quote(task_id, safe="")
+    deadline = time.monotonic() + timeout
+    while (remaining := deadline - time.monotonic()) > 0:
+        try:
+            http_status, task = client._request_json("GET", path, timeout=min(30, remaining))
+        except TimeoutError:
+            continue
+        if http_status != 200 or not isinstance(task, dict):
+            raise client._error(http_status, task, code="local_task_poll_failed")
+        status = task.get("status")
+        if status == "done":
+            return {**task, "task_id": task_id}
+        if status == "error":
+            raise _colab_gpu_task_error(task_id, task.get("error"))
+        if status != "running":
+            raise ProviderError(f"守护进程返回未知的 Colab GPU 任务状态 {status!r}",
+                                code="local_task_invalid_status", details={"task_id": task_id})
+        remaining = deadline - time.monotonic()
+        if remaining > 0:
+            time.sleep(min(_COLAB_TASK_POLL_INTERVAL, remaining))
+    raise ProviderError(
+        f"等待 Colab GPU 任务 {task_id} 超时。请运行 yc-h3 gpu status / yc-h3 gpu reconcile 核对会话状态。",
+        code="local_task_timeout", exit_code=1, details={"task_id": task_id},
+    )
+
+
 def _gpu(args, config):
     action = args.gpu_action
     if args.backend == "colab":
@@ -457,6 +528,10 @@ def _gpu(args, config):
         exit_code = response.get("exit_code")
         if status >= 400:
             return response, exit_code if exit_code in (1, 2, 3) else (3 if status == 409 else 1)
+        if action in ("up", "stop"):
+            timeout_key = "setup" if action == "up" and args.setup else action
+            task = _wait_for_colab_gpu_task(client, response.get("task_id"), timeout=_COLAB_TASK_TIMEOUTS[timeout_key])
+            return task, 0
         return response, 2 if response.get("status") == "warn" else 0
     from .chenyu_gpu import ChenyuGpuManager
 
