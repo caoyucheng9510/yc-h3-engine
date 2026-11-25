@@ -5,12 +5,12 @@
 - `RUNNINGHUB_API_KEY`：RunningHub 开放平台 API Key。
 - `RUNNINGHUB_WORKFLOW_ID`：用户自己在网页端复制 [YZ金鱼原帖](https://www.runninghub.cn/post/2124779546246475777) 并**成功运行一次（Plus 48GB）**后获取的工作流 ID。
   - 若文戏与武打使用不同副本，可分别配置 `RUNNINGHUB_WORKFLOW_ID_HYBRID` 与 `RUNNINGHUB_WORKFLOW_ID_COMBAT`。
-- 可选：`RUNNINGHUB_CNY_PER_POINT`（单积分人民币折算价）、`YC_H3_RUNNINGHUB_MAX_CONCURRENCY`（本地并发槽位）。
+- 可选：`RUNNINGHUB_CNY_PER_POINT`（单积分人民币折算价，仅影响新预检与新入账流水）、`YC_H3_RUNNINGHUB_MAX_CONCURRENCY`（本地并发槽位）。
 
 ## 2. 规格与槽位约束
 
 - **工作流**：`jinyu-hybrid`（默认，文戏）与 `jinyu-combat`（武打）。
-- **任务**：`r2v`（默认，至少 1 项参考素材，单图也走 `r2v`）或 `t2v`（零参考素材）；传入 `--task i2v` 会被预检阻断。
+- **任务**：`r2v`（默认，至少 1 项参考素材，单图也走 `r2v`）或 `t2v`（零参考素材）；传入 `--task i2v` 或 `--first-frame` 会被预检阻断。
 - **素材上限**：**6 图 + 3 音频 + 1 视频**。
   - 独立音频数 + 启用伴音的参考视频数 `<= 3`，参考音频与参考视频累计时长各自 `<= 15.0s`。
   - 参考视频提交时由本地 FFmpeg 自动规范化（24fps CFR、32 对齐缩放、`17k+5` 帧窗口、48kHz 双声道 AAC 或静音），规范化后须 `<= 30 MB`。
@@ -27,17 +27,17 @@
 yc-h3 doctor --provider runninghub --remote --json
 yc-h3 ledger balance sync --provider runninghub --json
 
-# 预检与提交
+# 预检与提交（注意：--tag 等全部参数在两步中必须完全一致）
 yc-h3 preflight --provider runninghub --workflow jinyu-hybrid \
   --image ./p1.png --video ./ref.mp4 --mute-reference-video \
   --seconds 6 --aspect 16:9 --no-music --save-last-frame \
-  --out ./out/s01.mp4 --prompt-file ./s01.txt --json
+  --out ./out/s01.mp4 --tag ep01 --prompt-file ./s01.txt --json
 
 yc-h3 gen --provider runninghub --workflow jinyu-hybrid \
   --image ./p1.png --video ./ref.mp4 --mute-reference-video \
   --seconds 6 --aspect 16:9 --no-music --save-last-frame \
   --out ./out/s01.mp4 --tag ep01 --prompt-file ./s01.txt \
-  --approve-digest "<DIGEST>" --json
+  --approve-digest "<preflight 返回的 approve_digest>" --json
 
 # 断线恢复（ambiguous 核实远端任务后可传 --remote-task-id 认领）
 yc-h3 jobs list --provider runninghub --json

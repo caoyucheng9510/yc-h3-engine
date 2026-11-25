@@ -21,28 +21,28 @@ yc-h3 gpu plan --backend colab --session h3 --gpu AUTO --setup \
   --setup-params '{"plugins":["ComfyUI-KJNodes","comfyui-SelfLift"]}' \
   --max-runtime-minutes 360 --idle-minutes 120 --json
 
-# 3) 取得用户确认后开机（CLI 会同步轮询至开机与冷部署终态）
+# 3) 取得用户确认后开机（从 gpu plan 返回的 digest 字段取值；CLI 会同步轮询至开机与冷部署终态）
 yc-h3 gpu up --backend colab --session h3 --gpu AUTO --setup \
   --setup-params '{"plugins":["ComfyUI-KJNodes","comfyui-SelfLift"]}' \
   --max-runtime-minutes 360 --idle-minutes 120 \
-  --approve-digest "<GPU_PLAN_DIGEST>" --json
+  --approve-digest "<gpu plan 返回的 digest>" --json
 ```
 
 ## 3. 预检、生成与释放
 
-- **槽位**：9 图 + 3 音频 + 3 视频（合计 `<= 12`，支持 `--first-frame` 走 `i2v`、`--mute-reference-video`、`--trim-to-requested-seconds`）。
-- **审批要求**：每次 `gen` 须先 `preflight` 获取实时 `approve_digest`（涵盖 `pass` 与 `warn`）。
+- **槽位**：9 图 + 3 音频 + 3 视频（合计 `<= 12`；有伴音参考视频同时占用音频槽与总量槽，并与独立音频共用累计 `<= 15s` 上限；支持 `--first-frame` 走 `i2v`、`--mute-reference-video`、`--trim-to-requested-seconds`）。
+- **审批要求**：每次 `gen` 须先 `preflight` 获取实时 `approve_digest`（涵盖 `pass` 与 `warn`），且两步参数（含 `--tag`）须完全一致。
 - **释放保护**：存在活跃受管会话时，`yc-h3 daemon stop` 默认拒绝退出，须先 `yc-h3 gpu stop --backend colab`，或显式加 `--stop-colab` / `--detach-colab`。
 
 ```bash
 yc-h3 preflight --provider colab-comfy --workflow jinyu-hybrid \
   --image ./p1.png --image ./p2.png --seconds 5 --aspect 16:9 --no-music \
-  --out ./out/s01.mp4 --prompt-file ./s01.txt --json
+  --out ./out/s01.mp4 --tag ep01 --prompt-file ./s01.txt --json
 
 yc-h3 gen --provider colab-comfy --workflow jinyu-hybrid \
   --image ./p1.png --image ./p2.png --seconds 5 --aspect 16:9 --no-music \
   --out ./out/s01.mp4 --tag ep01 --prompt-file ./s01.txt \
-  --approve-digest "<GEN_DIGEST>" --json
+  --approve-digest "<preflight 返回的 approve_digest>" --json
 
 # 查看状态、对账与释放实例（自动记录会话 CU 实耗到台账）
 yc-h3 gpu status --backend colab --json
