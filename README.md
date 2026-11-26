@@ -76,9 +76,9 @@ uv sync
 uv run yc-h3 --help
 ```
 
-### 顺手配一下官方的写词 Skill（推荐）
+### 配合官方写词 Skill 使用（推荐）
 
-我这个工具只管「把提示词跑成视频」，没往里塞魔改的写词模板。建议把 MiniMax 官方开源的 **[`h3-prompt-writing` Skill](https://github.com/MiniMax-AI/MiniMax-H3/tree/main/.agents/skills/h3-prompt-writing)** 一并装上——先让它帮你把镜头想法写成规范的 H3 提示词，再交给 `yc-h3` 生成。
+`yc-h3` 只接收符合 MiniMax-H3 官方规范的提示词，不负责提示词创作。建议一并安装 MiniMax 官方的 **[`h3-prompt-writing` Skill](https://github.com/MiniMax-AI/MiniMax-H3/tree/main/.agents/skills/h3-prompt-writing)**，先由它生成符合规范的提示词，再交给 `yc-h3` 执行生成。
 
 ---
 

@@ -19,7 +19,7 @@ compatibility: 跨平台 CLI（Python >= 3.12、FFmpeg/FFprobe）；RunningHub�
   - `t2v`（文生视频）：零参考素材（省略全部素材参数时自动推断）；
   - `r2v`（多模态参考）：至少 1 项本地参考图 / 音频 / 视频（`--image` / `--audio` / `--video`）；
   - `i2v`（仅受管 ComfyUI `colab-comfy` / `chenyu-comfy`）：单独首帧图（`--first-frame`）。
-- **官方写词 Skill 协作**：本 Skill 不内置非官方写词模板。若用户仅提供口语想法、尚未生成规范 H3 提示词：
+- **官方写词 Skill 协作**：`yc-h3` 只接收符合 MiniMax-H3 官方规范的提示词，本 Skill 不负责提示词创作。若用户仅提供口语想法、尚未生成规范提示词：
   - 优先交由已安装的官方 **`h3-prompt-writing`**（或用户指定的写词 Skill）写好规范提示词后，再调用 `yc-h3`；
   - 若未安装，引导先安装官方 `h3-prompt-writing`（`https://github.com/MiniMax-AI/MiniMax-H3/tree/main/.agents/skills/h3-prompt-writing`），生成提示词后再执行。
 
