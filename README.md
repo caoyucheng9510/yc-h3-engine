@@ -1,6 +1,22 @@
+<div align="center">
+
+<img src="docs/assets/logo.svg" width="84" height="84" alt="yc-h3-engine Logo" />
+
 # yc-h3-engine
 
-[![License](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
+**MiniMax-H3 多通道底层生视频引擎（CLI `yc-h3` + 配套 Agent Skill）**
+
+<p align="center"><a href="LICENSE"><img src="https://img.shields.io/badge/License-MIT-10B981?style=flat-square" alt="License: MIT" style="display: inline-block; margin: 2px;" /></a> <a href="pyproject.toml"><img src="https://img.shields.io/badge/Python-3.12%2B-38BDF8?style=flat-square&logo=python&logoColor=white" alt="Python 3.12+" style="display: inline-block; margin: 2px;" /></a> <a href="#四个通道怎么选"><img src="https://img.shields.io/badge/Platform-Win_%7C_macOS_%7C_Linux-1E293B?style=flat-square" alt="Cross-Platform" style="display: inline-block; margin: 2px;" /></a> <a href="#四个通道怎么选"><img src="https://img.shields.io/badge/Backends-RunningHub_%7C_ChenYu_%7C_Colab-0284C7?style=flat-square" alt="4 Backends" style="display: inline-block; margin: 2px;" /></a> <a href="skills/yc-h3-engine/SKILL.md"><img src="https://img.shields.io/badge/Agent_Skill-Claude_Code_%7C_Codex_%7C_Cursor-059669?style=flat-square" alt="Agent Skill" style="display: inline-block; margin: 2px;" /></a></p>
+
+<p align="center">
+  <img src="docs/assets/hero-banner.png" width="100%" alt="yc-h3-engine — 一个引擎，统一调度四条 MiniMax-H3 算力通道" />
+</p>
+
+[**四个通道怎么选**](#四个通道怎么选) · [**安装**](#安装) · [**让 Agent 帮你配**](#让你的-agent-帮你装和配) · [**账号与 `.env` 配置**](#env-config) · [**跑通第一条视频**](#quickstart) · [**实测速度与费用**](#我实测下来的速度和费用) · [**协议与致谢**](#协议与致谢)
+
+</div>
+
+---
 
 这是我从自己日常用的创作工作台里单独抽出来开源的 **MiniMax-H3 底层生视频引擎**（命令行 `yc-h3` + 配套 Agent Skill `skills/yc-h3-engine/`）。
 
@@ -13,6 +29,10 @@
 ---
 
 ## 四个通道怎么选
+
+<p align="center">
+  <img src="docs/assets/providers-matrix.png" width="100%" alt="四条 H3 算力通道选型对比：RunningHub、晨羽按次 API、晨羽独占 GPU、Google Colab" />
+</p>
 
 | 推荐怎么选 | 通道 (`--provider`) | 系统支持 | 素材上限 | 适合什么情况 |
 | :--- | :--- | :--- | :--- | :--- |
@@ -79,6 +99,8 @@ uv run yc-h3 --help
 ```
 
 ---
+
+<a id="env-config"></a>
 
 ## 账号准备与 `.env` 配置
 
@@ -175,7 +197,13 @@ RunningHub 有个硬要求：**你得先在网页端把工作流保存到自己�
 
 ---
 
+<a id="quickstart"></a>
+
 ## 跑通第一条视频（预检 → 确认 → 生成）
+
+<p align="center">
+  <img src="docs/assets/pipeline-guardrails.png" width="100%" alt="yc-h3 安全生成闭环：免费预检报价、人工审批确认、断点提交防重扣、FFmpeg 解码校验落盘、自动费用台账" />
+</p>
 
 我不想让工具或 AI 替你悄悄花钱，所以所有付费操作都强制走**两步确认**：先跑只读的 `preflight` 核对素材顺序、尺寸、帧数和估算费用，拿到实时 `approve_digest` 后，**保持全部参数原样不动**（包括 `--tag`）再执行 `gen`。
 
