@@ -63,6 +63,10 @@ compatibility: 跨平台 CLI（Python >= 3.12、FFmpeg/FFprobe）；RunningHub�
 
 > 各通道完整的画幅预设、像素上限与时长约束可随时运行只读命令 `yc-h3 workflows --json` 查询。
 
+- **原生分辨率档位与成片交付边界**：
+  - 默认 `16:9`（`1664×928`，约 1.54 MP）与 `9:16`（`928×1664`）均为**准 1080p（928p）**，介于 720p 与标准 1080p 之间（H3 要求宽高为 32 倍数，原生无法直出精确 `1920×1080` / `1280×720`；三路主力上限为 1.5 MP，Tier 3 上限 `1024×544` 为低于 720p 的 544p；仅 `chenyu` 支持 `--megapixels 2.0` 出近 1080p `1920×1088` 或云端 `--upscale-2x`）。汇报规格时勿把 `1664×928` 误称为标准 1080p。
+  - `yc-h3` 对云端返回成片仅做 FFmpeg 只读解码验片，**不做本地分辨率缩放、裁切、补边或超分**（ComfyUI `--trim-to-requested-seconds` 也只裁尾帧、不改像素）。若用户需要精确 `1920×1080` / `1080×1920` 成品，说明由剪映 / PR / 后期流程统一缩放导出，或选用 `chenyu` 2.0 MP / `--upscale-2x` / 第三方超分工具。
+
 - **通道顺位与自动选路检查**：
   - 选路优先级：**当轮用户明确指定 > 当前项目规则（如 `AGENTS.md`）> `.env` 的 `YC_H3_PROVIDER_ORDER`（`yc-h3 doctor --json` 的 `provider_order` 或 `yc-h3 providers --json`）> 默认顺位（`colab-comfy → chenyu-comfy → runninghub → chenyu`）**。
   - 若省略 `--provider` 跑 `preflight --json`，CLI 会按顺位自动跳过未开机或能力不匹配的通道并记录在 `routing_skipped` 中。**拿到结果后必须同时核对 `selected_provider` 与 `routing_skipped`**：只要顺位靠前的通道（尤其是未开机的独占 GPU）被跳过，必须向用户说明跳过原因，由用户决定先开机还是切到下一顺位，绝不静默切换付费通道。若用户确认沿用 `selected_provider`，在 `gen` 时显式带上 `--provider <selected_provider>` 即可直接复用本次摘要并防止两步之间选路漂移；若用户改为先开机或改选其他通道，则须针对最终通道重跑 `preflight`。

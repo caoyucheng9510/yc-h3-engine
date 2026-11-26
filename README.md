@@ -8,7 +8,7 @@
 
 # yc-h3-engine
 
-**MiniMax-H3 多通道底层生视频引擎（CLI `yc-h3` + 配套 Agent Skill）**
+**MiniMax-H3 多通道底层生视频引擎**
 
 <p align="center"><a href="LICENSE"><img src="https://img.shields.io/badge/License-MIT-10B981?style=flat-square" alt="License: MIT" style="display: inline-block; margin: 2px;" /></a> <a href="pyproject.toml"><img src="https://img.shields.io/badge/Python-3.12%2B-38BDF8?style=flat-square&logo=python&logoColor=white" alt="Python 3.12+" style="display: inline-block; margin: 2px;" /></a> <a href="#四个通道怎么选"><img src="https://img.shields.io/badge/Platform-Win_%7C_macOS_%7C_Linux-1E293B?style=flat-square" alt="Cross-Platform" style="display: inline-block; margin: 2px;" /></a> <a href="#四个通道怎么选"><img src="https://img.shields.io/badge/Backends-RunningHub_%7C_ChenYu_%7C_Colab-0284C7?style=flat-square" alt="4 Backends" style="display: inline-block; margin: 2px;" /></a> <a href="skills/yc-h3-engine/SKILL.md"><img src="https://img.shields.io/badge/Agent_Skill-Claude_Code_%7C_Codex_%7C_Cursor-059669?style=flat-square" alt="Agent Skill" style="display: inline-block; margin: 2px;" /></a></p>
 
@@ -52,7 +52,7 @@
 ### 先装两个基础依赖
 
 1. **Python 3.12+** 和 **[uv](https://docs.astral.sh/uv/)**（用来隔离环境和一行安装）。
-2. **FFmpeg / FFprobe**（用来给成片做 24fps / 双声道 / `-xerror` 解码校验，以及 RunningHub 参考视频预处理）：
+2. **FFmpeg / FFprobe**（用来给成片做只读的 24fps / 双声道 / `-xerror` 解码验片，不改写画面像素；另用于 RunningHub 参考视频预处理）：
    - **macOS**：`brew install ffmpeg`
    - **Windows**：`winget install Gyan.FFmpeg`
    - **Linux**：用系统包管理器装 `ffmpeg`
@@ -232,12 +232,17 @@ yc-h3 gen --provider runninghub --workflow jinyu-hybrid \
 
 换后端只要改 `--provider`（比如 `chenyu`、`chenyu-comfy`、`colab-comfy`），或者干脆省略，让引擎按你的素材要求自动挑能跑的通道。
 
-### 分辨率怎么看、怎么调
+### 分辨率怎么看、怎么调（是不是 1080p？成片会不会二次处理？）
 
-- **默认分辨率**：所有通道默认按 `16:9` 生成 **`1664×928`**（`24fps`，时长按 `17k+5` 帧网格对齐）。每次跑 `yc-h3 preflight` 都会在返回结果的 `facts.width` / `facts.height`（非 `--json` 模式也会在顶部摘要行）标出本次实际分辨率。
+- **默认档位是「准 1080p」，不是精确 `1920×1080`**：
+  - 所有通道默认按 `16:9` 生成 **`1664×928`**（`24fps`，约 **1.54 MP**，时长按 `17k+5` 帧网格对齐），画质档位**介于 720p（`1280×720`）和标准 1080p（`1920×1080`）之间**（宽高约为 1080p 的 86%、总像素约 74%）；竖屏默认 `9:16`（`928×1664`）同理，属于竖屏准 1080p。
+  - **为什么不是精确 `1920×1080` / `1280×720`**：MiniMax-H3 底层要求宽高必须是 **32 的倍数**（`1080`、`720` 都不能被 32 整除），且 `runninghub` / `chenyu-comfy` / `colab-comfy` 三路工作流为兼顾显存与采样稳定，将原生上限锁在最长边 `<= 1664`、总像素 `<= 1,572,864`（约 1.5 MP）。每次跑 `yc-h3 preflight` 都会在 `facts.width` / `facts.height`（非 `--json` 模式也会在顶部摘要行）标出本次实际分辨率。
+- **成片交付边界（引擎不做二次缩放或本地超分）**：
+  - `yc-h3` 只对云端返回的成片做 **FFmpeg 只读解码验片**，**不做分辨率缩放、裁切、补边或本地超分**，平台生成多少像素就原样落盘多少像素（避免进剪辑软件前多一次有损重编码；受管 ComfyUI 的 `--trim-to-requested-seconds` 也仅裁掉多余尾帧，不改变分辨率）。
+  - **要输出标准 1080p 成片怎么用**：直接拿默认 `1664×928`（或 `928×1664`）原生毛片放进剪映 / PR / 后期工程的 `1920×1080`（或 `1080×1920`）时间线，由剪辑阶段统一微缩放或轻裁导出即可；想原生更高清或走云端超分，可用 `chenyu` 按次 API 的 `--megapixels 2.0`（`1920×1088`，近 1080p）或 `--upscale-2x`（云端工作流 2× 超分，输出仍非精确 1080p），也可对落盘毛片自行使用第三方视频超分工具。
 - **按通道调整方式**（完整画幅与像素上限可随时运行 `yc-h3 workflows --json` 查看）：
-  - **`runninghub` / `chenyu-comfy` / `colab-comfy`**：用 `--aspect` 切换预设（`16:9` = `1664×928`、`9:16` = `928×1664`、`1:1` = `1248×1248`），或成对传入 32 倍数的 `--width` 与 `--height`（与 `--aspect` 互斥；高显存档位最长边 `<= 1664`、总像素 `<= 1,572,864`）。注意受管 ComfyUI 的 `<36 GiB` 显存卡（如 5090 32GB / L4 24GB）硬上限为**最长边 `<= 1024`、总像素 `<= 557,056`（如 `1024×544` 或竖屏 `544×1024`）、最长 `8s`**，需要显式传 `--width`/`--height`。
-  - **`chenyu`（按次 API）**：不支持 `--width`/`--height`，改用 `--aspect`（支持 `16:9`、`9:16`、`1:1`、`4:3`、`3:4`、`3:2`、`2:3`、`21:9`）+ `--megapixels`（`0.2–2.0`，默认 `1.5`；`16:9` 下 `1.5` 对应 `1664×928`，`2.0` 对应 `1920×1088`）+ 可选 `--upscale-2x`。非 `16:9`、非内置已知 `16:9` 像素档位（见 `yc-h3 workflows --json` 的 `known_16_9_sizes`）或开启 `--upscale-2x` 时，预检阶段 `facts.width`/`facts.height` 为 `null`（并附 `facts.size_note`），最终像素以成片探测为准。
+  - **`runninghub` / `chenyu-comfy` / `colab-comfy`**：用 `--aspect` 切换预设（`16:9` = `1664×928` 准 1080p、`9:16` = `928×1664` 竖屏准 1080p、`1:1` = `1248×1248`），或成对传入 32 倍数的 `--width` 与 `--height`（与 `--aspect` 互斥；高显存档位最长边 `<= 1664`、总像素 `<= 1,572,864`，不支持 `--upscale-2x`）。注意受管 ComfyUI 的 `<36 GiB` 显存卡（如 5090 32GB / L4 24GB）硬上限为**最长边 `<= 1024`、总像素 `<= 557,056`（如 `1024×544` 或竖屏 `544×1024`，属 544p 档位、低于 720p）、最长 `8s`**，需要显式传 `--width`/`--height`。
+  - **`chenyu`（按次 API）**：不支持 `--width`/`--height`，改用 `--aspect`（支持 `16:9`、`9:16`、`1:1`、`4:3`、`3:4`、`3:2`、`2:3`、`21:9`）+ `--megapixels`（`0.2–2.0`，默认 `1.5`；`16:9` 下 `1.5` 对应 `1664×928` 准 1080p，`2.0` 对应 `1920×1088` 近 1080p）+ 可选云端 `--upscale-2x`。非 `16:9`、非内置已知 `16:9` 像素档位（见 `yc-h3 workflows --json` 的 `known_16_9_sizes`）或开启 `--upscale-2x` 时，预检阶段 `facts.width`/`facts.height` 为 `null`（并附 `facts.size_note`），最终像素以成片探测为准。
 
 ### 素材和提示词里的 `<Picture N>` / `<Audio N>` / `<Video N>` 怎么对应
 
