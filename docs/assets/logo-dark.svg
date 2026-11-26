@@ -1,0 +1,7 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 128" fill="none">
+  <!-- yc-h3-engine Logo (Dark): Swiss Geometric H3 Monogram -->
+  <path d="M 12 32 H 23.5 V 58 H 46.5 V 32 H 58 V 96 H 46.5 V 69 H 23.5 V 96 H 12 Z" fill="#F8FAFC"/>
+  <path d="M 68 32 H 98.5 C 107.6 32 114 37.8 114 46.8 C 114 53.6 109.8 58.6 103.2 60.6 C 110.8 62.8 116 68.8 116 77.2 C 116 88.2 107.6 96 95.6 96 H 68 V 85 H 94.6 C 100.4 85 104 81.6 104 76.8 C 104 71.8 100.2 69 93.8 69 H 78 V 58 H 92.6 C 98.4 58 102 55.2 102 50.4 C 102 45.8 98.4 43 92.8 43 H 68 V 32 Z" fill="#3B82F6"/>
+  <rect x="12" y="106" width="84" height="4" fill="#F8FAFC"/>
+  <path d="M 103 102 L 116 108 L 103 114 Z" fill="#3B82F6"/>
+</svg>

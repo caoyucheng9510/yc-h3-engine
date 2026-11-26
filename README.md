@@ -1,6 +1,10 @@
 <div align="center">
 
-<img src="docs/assets/logo.svg" width="84" height="84" alt="yc-h3-engine Logo" />
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="docs/assets/logo-dark.svg" />
+  <source media="(prefers-color-scheme: light)" srcset="docs/assets/logo.svg" />
+  <img src="docs/assets/logo.svg" width="84" height="84" alt="yc-h3-engine Logo" />
+</picture>
 
 # yc-h3-engine
 
