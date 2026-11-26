@@ -18,7 +18,7 @@
 - **画幅与时长**：
   - 默认 `--aspect 16:9`（`1664×928`），支持 `9:16`（`928×1664`）、`1:1`（`1248×1248`），或同时传 `--width` 与 `--height`（32 倍数、最长边 `<= 1664`、总像素 `<= 1,572,864`，与 `--aspect` 互斥）。
   - `--seconds` 支持 `0.2–15.0`（小数或整数，默认 `5`），输出帧数按 24fps 向上对齐 `17k + 5` 网格。
-  - `--steps` 默认 `12`（范围 `7–100`）；`--seed` 默认 `-1`（随机）；支持 `--no-music` 与 `--save-last-frame`。
+  - `--steps` 默认 `12`（范围 `7–100`）；`--seed` 默认 `-1`（随机）；支持 `--no-music` 与 `--save-last-frame`；`--out` 须以 `.mp4` 结尾；**不支持 `--megapixels`、`--upscale-2x`、`--trim-to-requested-seconds`**。
 - **本地实跑自校准预估**：
   - 成片交付成功后，CLI 会尽力将脱敏运行观测写入 `<data_dir>/perf/observations.jsonl`（旧 `r2v` 断点缺失是否含参考视频标记时不入库）。
   - 后续 `preflight` 优先按本地同工作流（`workflow`）、同机型（`instance_type`）、同是否含参考视频（`has_ref_video`）的近期样本拟合；同机型无匹配时可回退至同工作流、同参考视频类别的近期样本。仅当历史能拟合出运行耗时（`estimated_run_seconds`）或参考积分（`estimated_reference_points`）时才采用 `estimate_source: "local_history"`（附 `estimate_samples`、`estimated_wall_seconds` 及配置 `RUNNINGHUB_CNY_PER_POINT` 后的 `estimated_cny`）。
