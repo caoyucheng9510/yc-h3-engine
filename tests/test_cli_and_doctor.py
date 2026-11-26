@@ -69,8 +69,23 @@ def test_doctor_and_workflows_are_read_only(tmp_path, monkeypatch, capsys):
     assert cli.main([*prefix, "workflows", "--json"]) == 0
     workflows = json.loads(capsys.readouterr().out)
     assert len(workflows) == 8
+    by_provider = {row["provider_id"]: row for row in workflows if row["workflow"] == "jinyu-hybrid"}
     runninghub = [row for row in workflows if row["provider_id"] == "runninghub"]
     assert all(row["workflow_id"] is None and row["slots"]["videos"] == 1 for row in runninghub)
+    assert by_provider["runninghub"]["resolution"]["default_size"] == [1664, 928]
+    assert by_provider["runninghub"]["resolution"]["supports_custom_dimensions"] is True
+    assert by_provider["chenyu"]["resolution"]["mode"] == "aspect_and_megapixels"
+    assert by_provider["chenyu"]["resolution"]["default_size"] == [1664, 928]
+    assert by_provider["chenyu"]["resolution"]["supports_custom_dimensions"] is False
+    assert by_provider["chenyu"]["seconds"]["integer_only"] is True
+    for comfy_id in ("colab-comfy", "chenyu-comfy"):
+        assert by_provider[comfy_id]["resolution"]["default_size"] == [1664, 928]
+        assert by_provider[comfy_id]["resolution"]["tier3_max_edge"] == 1024
+        assert by_provider[comfy_id]["resolution"]["tier3_max_pixels"] == 1024 * 544
+        assert by_provider[comfy_id]["resolution"]["tier3_max_size"] == [1024, 544]
+        assert "tier3_max_seconds" not in by_provider[comfy_id]["resolution"]
+        assert by_provider[comfy_id]["seconds"]["tier3_max"] == 8
+        assert by_provider[comfy_id]["seconds"]["integer_only"] is False
     assert not (tmp_path / "absent").exists()
 
 
@@ -380,6 +395,95 @@ def test_cli_selects_runninghub_and_reports_approval(tmp_path, monkeypatch, caps
     assert error["error"] == "approval_missing" and error["preflight"]["approve_digest"] == result["digest"]
     assert not config.data_dir.exists()
     assert cli.main(["gen", "--provider", "runninghub", "--seconds", "not-number", *arguments]) == 1
+
+
+def test_preflight_human_summary_and_help_expose_resolution_and_bindings(tmp_path, monkeypatch, capsys):
+    config = make_config(tmp_path, monkeypatch, RUNNINGHUB_API_KEY="fake-runninghub-api-key",
+                         RUNNINGHUB_WORKFLOW_ID_HYBRID="3579024681", CHENYU_API_KEY="fake-chenyu-key")
+    monkeypatch.setattr(cli, "load_config", lambda **kwargs: config)
+    hero = tmp_path / "hero.png"
+    hero.write_bytes(b"png-bytes")
+    ref_mp4 = tmp_path / "ref.mp4"
+    ref_mp4.write_bytes(b"mp4-bytes")
+    voice = tmp_path / "voice.wav"
+    voice.write_bytes(b"wav-bytes")
+
+    def fake_probe(path):
+        name = Path(path).name
+        if name == "ref.mp4":
+            return {"streams": [
+                {"codec_type": "video", "index": 0, "width": 1280, "height": 720, "duration": "2.0"},
+                {"codec_type": "audio", "index": 1, "duration": "2.0"},
+            ]}
+        return {"streams": [{"codec_type": "audio", "index": 0, "duration": "2.0"}]}
+
+    monkeypatch.setattr("yc_h3.providers.video_common.default_ffprobe", fake_probe)
+    prompt = """subject_definitions: <Subject 1> in <Picture 1>, motion in <Video 1>, voice in <Audio 1> and <Audio 2>.
+summary: Summary.
+retention_analysis: Keep details.
+detailed_description: [Shot 1] Action.
+overall_soundscape: Room tone.
+non_diegetic_music: N/A
+"""
+    assert cli.main([
+        "preflight", "--provider", "runninghub", "--image", str(hero), "--video", str(ref_mp4),
+        "--audio", str(voice), "--seconds", "5", "--aspect", "9:16",
+        "--out", str(tmp_path / "out.mp4"), "--prompt", prompt,
+    ]) == 2
+    out = capsys.readouterr().out
+    assert "规格 928x1664（9:16），5s（124 帧 @ 24fps）" in out
+    assert "素材绑定 <Picture 1> = hero.png" in out
+    assert "素材绑定 <Video 1> = ref.mp4" in out
+    assert "素材绑定 <Audio 1> = ref.mp4（来自 <Video 1> 伴音）" in out
+    assert "素材绑定 <Audio 2> = voice.wav" in out
+
+    # Chenyu non-16:9 / upscale_2x and uncalibrated 16:9 megapixels summary.
+    assert cli.main([
+        "preflight", "--provider", "chenyu", "--seconds", "5", "--aspect", "9:16", "--upscale-2x",
+        "--out", str(tmp_path / "cy.mp4"), "--prompt", TEXT_PROMPT,
+    ]) == 2
+    cy_out = capsys.readouterr().out
+    assert "规格 画幅 9:16 / 1.5 MP + 2x 超分（预检阶段像素待成片确认），5s（124 帧 @ 24fps）" in cy_out
+
+    assert cli.main([
+        "preflight", "--provider", "chenyu", "--seconds", "5", "--aspect", "16:9", "--megapixels", "1.3",
+        "--out", str(tmp_path / "cy13.mp4"), "--prompt", TEXT_PROMPT,
+    ]) == 2
+    cy13_out = capsys.readouterr().out
+    assert "规格 画幅 16:9 / 1.3 MP（预检阶段像素待成片确认），5s（124 帧 @ 24fps）" in cy13_out
+
+    # Duplicate basenames from different directories are disambiguated, and booleans are not printed as int sizes.
+    dir_a, dir_b = tmp_path / "char_a", tmp_path / "char_b"
+    dir_a.mkdir()
+    dir_b.mkdir()
+    cli._print_preflight_summary({"facts": {
+        "width": 640, "height": 384, "aspect": None, "seconds": 5, "frames": 124,
+        "prompt_bindings": {
+            "<Picture 1>": {"kind": "image", "source": "first_frame", "file": "ref.png", "path": str(dir_a / "ref.png")},
+            "<Picture 2>": {"kind": "image", "source": "image", "file": "ref.png", "path": str(dir_b / "ref.png")},
+            "<Video 1>": {"kind": "video", "source": "video", "file": "clip.mp4", "path": str(tmp_path / "clip.mp4"), "use_audio": False},
+        },
+    }})
+    dup_out = capsys.readouterr().out
+    assert "规格 640x384，5s（124 帧 @ 24fps）" in dup_out
+    assert "素材绑定 <Picture 1> = char_a/ref.png（首帧）" in dup_out
+    assert "素材绑定 <Picture 2> = char_b/ref.png" in dup_out
+    assert "素材绑定 <Video 1> = clip.mp4（无伴音）" in dup_out
+
+    cli._print_preflight_summary({"facts": {"width": True, "height": False, "seconds": True, "frames": True}})
+    assert capsys.readouterr().out == ""
+
+    # Non-UTF-8 stderr fallback keeps preflight JSON strictly valid.
+    class AsciiStream(io.StringIO):
+        encoding = "ascii"
+
+    buf = AsciiStream()
+    cli._render_json({"file": "英雄🎬.png"}, file=buf)
+    assert json.loads(buf.getvalue()) == {"file": "英雄🎬.png"}
+
+    # CLI --help includes resolution and prompt tag binding hints.
+    help_text = cli._parser()._subparsers._group_actions[0].choices["preflight"].format_help()
+    assert "<Picture 1>" in help_text and "<Audio N>" in help_text and "1664×928" in help_text
 
 
 def test_native_windows_imports_and_three_preflights(tmp_path):

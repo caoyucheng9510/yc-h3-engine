@@ -395,3 +395,95 @@ def test_comfy_resumed_delivery_backfills_observation_after_transient_write_erro
     assert rows[0]["idempotency_key"] == f"colab-comfy:{first.remote_id}"
     assert rows[0]["hardware"] == "A100-SXM4-80GB"
     assert rows[0]["cold_start"] is True
+
+
+def test_comfy_preflight_prompt_bindings_r2v_and_i2v(tmp_path, monkeypatch, render_clip):
+    from PIL import Image
+    from yc_h3.providers.comfy_common import prompt_bindings
+
+    secret = "store-secret-token"
+    config = make_config(tmp_path, monkeypatch)
+    store_config = make_config(tmp_path, monkeypatch, CHENYU_API_KEY=secret)
+    store = TaskStore(config=store_config)
+    daemon = Daemon(config, render_clip(640, 384, 22))
+    daemon.upload = lambda filename, data: {"remote_path": f"/inputs/{filename}"}
+    provider = ColabComfyProvider(client=daemon, config=config)
+
+    secret_dir = tmp_path / secret
+    secret_dir.mkdir()
+    img = secret_dir / "hero.png"
+    Image.new("RGB", (64, 36)).save(img)
+    vid_sound = tmp_path / "with_audio.mp4"
+    vid_silent = tmp_path / "silent.mp4"
+    aud = tmp_path / "voice.wav"
+    for p in (vid_sound, vid_silent, aud):
+        p.write_bytes(b"media")
+
+    def fake_probe(path):
+        name = Path(path).name
+        if name == "with_audio.mp4":
+            return {"streams": [
+                {"codec_type": "video", "index": 0, "width": 640, "height": 360, "duration": "2.0"},
+                {"codec_type": "audio", "index": 1, "duration": "2.0"},
+            ]}
+        if name == "silent.mp4":
+            return {"streams": [
+                {"codec_type": "video", "index": 0, "width": 640, "height": 360, "duration": "2.0"},
+            ]}
+        return {"streams": [{"codec_type": "audio", "index": 0, "duration": "2.0"}]}
+
+    r2v_prompt = """subject_definitions: <Subject 1> in <Picture 1>, <Video 1>, <Video 2>, <Audio 1>, <Audio 2>.
+summary: Summary.
+retention_analysis: Keep.
+detailed_description: [Shot 1] Action.
+overall_soundscape: Ambient.
+non_diegetic_music: N/A
+"""
+    # Sparse video audio order: first video silent, second video with audio -> <Audio 1> comes from <Video 2>.
+    with monkeypatch.context() as patch:
+        patch.setattr("yc_h3.providers.video_common.default_ffprobe", fake_probe)
+        sparse_plan = provider.preflight(GenerationRequest(
+            "video", prompt=r2v_prompt, output_path=tmp_path / "sparse.mp4",
+            inputs={"images": [img], "videos": [vid_silent, vid_sound], "audios": [aud]},
+            params={"seconds": 5},
+        ), store=store)
+    assert sparse_plan.status == "pass", sparse_plan.signals
+    assert sparse_plan.facts["aspect"] == "16:9"
+    assert sparse_plan.facts["width"] == 1664 and sparse_plan.facts["height"] == 928
+    bindings = sparse_plan.facts["prompt_bindings"]
+    assert list(bindings.keys()) == ["<Picture 1>", "<Video 1>", "<Video 2>", "<Audio 1>", "<Audio 2>"]
+    assert secret not in bindings["<Picture 1>"]["path"]
+    assert bindings["<Video 1>"]["use_audio"] is False
+    assert bindings["<Video 2>"]["use_audio"] is True
+    assert bindings["<Audio 1>"]["source"] == "video_audio" and bindings["<Audio 1>"]["from"] == "<Video 2>"
+    assert bindings["<Audio 2>"]["source"] == "audio" and bindings["<Audio 2>"]["file"] == "voice.wav"
+
+    # i2v accepts first_frame_path alias and omits prompt_bindings from persisted checkpoint quote.
+    i2v_prompt = """The video starts at 0.00 seconds with <Picture 1>.
+integrated_multimodal_description: [Shot 1] The camera pushes in.
+overall_soundscape: Soft wind.
+non_diegetic_music: N/A
+"""
+    i2v_req = GenerationRequest(
+        "video", prompt=i2v_prompt, output_path=tmp_path / "i2v.mp4",
+        inputs={"first_frame_path": img},
+        params={"width": 640, "height": 384, "seconds": 0.5},
+    )
+    i2v_plan = provider.preflight(i2v_req, store=store)
+    assert i2v_plan.status == "pass", i2v_plan.signals
+    assert i2v_plan.facts["aspect"] is None
+    assert i2v_plan.facts["prompt_bindings"]["<Picture 1>"]["source"] == "first_frame"
+    assert i2v_plan.facts["prompt_bindings"]["<Picture 1>"]["file"] == "hero.png"
+    assert secret not in i2v_plan.facts["prompt_bindings"]["<Picture 1>"]["path"]
+
+    delivered = provider.generate(replace(i2v_req, approve_digest=i2v_plan.digest), store=store)
+    assert delivered.state == "delivered"
+    saved = store.get(delivered.task_key)
+    assert "prompt_bindings" not in saved["quote"]
+
+    # Helper accepts dict, Path/str, and tuple forms for videos without mis-unpacking dicts.
+    direct = prompt_bindings(videos=[{"path": vid_sound, "use_audio": False}, vid_sound, (vid_silent, False)])
+    assert direct["<Video 1>"]["file"] == "with_audio.mp4" and direct["<Video 1>"]["use_audio"] is False
+    assert direct["<Video 2>"]["file"] == "with_audio.mp4" and direct["<Video 2>"]["use_audio"] is True
+    assert direct["<Video 3>"]["file"] == "silent.mp4" and direct["<Video 3>"]["use_audio"] is False
+    assert direct["<Audio 1>"]["from"] == "<Video 2>" and "<Audio 2>" not in direct

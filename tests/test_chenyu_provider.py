@@ -119,3 +119,59 @@ def test_same_account_replays_exact_order_and_writes_ledger_once(tmp_path, monke
     assert quote.facts["estimated_cny"] == 0.21
     assert "预计纯推理耗时 90.0 秒" in quote.signals[0]["detail"]
     assert "近期端到端耗时中位数 120.0 秒" in quote.signals[0]["detail"]
+
+
+def test_chenyu_preflight_resolution_facts_and_prompt_bindings(tmp_path, monkeypatch):
+    secret = "fake-chenyu-credential"
+    config = make_config(tmp_path, monkeypatch, CHENYU_API_KEY=secret)
+    provider = ChenyuProvider(config=config, auth_opener=Transport())
+    secret_dir = tmp_path / secret
+    secret_dir.mkdir()
+    img = secret_dir / "char.png"
+    img.write_bytes(b"png")
+    aud = tmp_path / "voice.wav"
+    aud.write_bytes(b"wav")
+    monkeypatch.setattr(
+        "yc_h3.providers.video_common.default_ffprobe",
+        lambda _: {"streams": [{"codec_type": "audio", "index": 0, "duration": "2.0"}]},
+    )
+    prompt = """subject_definitions: <Subject 1> in <Picture 1>, voice <Audio 1>.
+summary: Summary.
+retention_analysis: Keep.
+detailed_description: [Shot 1] Speak.
+overall_soundscape: Room tone.
+non_diegetic_music: N/A
+"""
+    known = provider.preflight(GenerationRequest(
+        "video", prompt=prompt, output_path=tmp_path / "known.mp4",
+        inputs={"images": [img], "audios": [aud]},
+        params={"seconds": 5, "aspect": "16:9", "megapixels": 1.5},
+    ))
+    assert known.status == "warn", known.signals
+    assert known.facts["width"] == 1664 and known.facts["height"] == 928
+    assert known.facts["aspect"] == "16:9" and known.facts["megapixels"] == 1.5
+    assert known.facts["upscale_2x"] is False and known.facts["seconds"] == 5 and known.facts["frames"] == 124
+    assert "size_note" not in known.facts
+    assert list(known.facts["prompt_bindings"]) == ["<Picture 1>", "<Audio 1>"]
+    assert known.facts["prompt_bindings"]["<Picture 1>"]["file"] == "char.png"
+    assert secret not in known.facts["prompt_bindings"]["<Picture 1>"]["path"]
+    assert known.facts["prompt_bindings"]["<Audio 1>"]["file"] == "voice.wav"
+
+    unknown_aspect = provider.preflight(GenerationRequest(
+        "video", prompt=TEXT_PROMPT, output_path=tmp_path / "portrait.mp4",
+        params={"seconds": 5, "aspect": "9:16", "megapixels": 1.5, "upscale_2x": True},
+    ))
+    assert unknown_aspect.status == "warn", unknown_aspect.signals
+    assert unknown_aspect.facts["width"] is None and unknown_aspect.facts["height"] is None
+    assert unknown_aspect.facts["expected_size"] is None and unknown_aspect.facts["upscale_2x"] is True
+    assert "size_note" in unknown_aspect.facts
+    assert unknown_aspect.facts["prompt_bindings"] == {}
+
+    unknown_mp = provider.preflight(GenerationRequest(
+        "video", prompt=TEXT_PROMPT, output_path=tmp_path / "midmp.mp4",
+        params={"seconds": 5, "aspect": "16:9", "megapixels": 1.3},
+    ))
+    assert unknown_mp.status == "warn", unknown_mp.signals
+    assert unknown_mp.facts["width"] is None and unknown_mp.facts["height"] is None
+    assert unknown_mp.facts["expected_size"] is None and unknown_mp.facts["upscale_2x"] is False
+    assert "size_note" in unknown_mp.facts

@@ -242,6 +242,49 @@ def _media_slots(params):
             yield f"{group}.{index}", entry, "path"
 
 
+def prompt_bindings(*, images=(), audios=(), videos=(), first_frame=None, redact=None):
+    """Build deterministic prompt tag bindings (<Picture/Video/Audio N>) matching model input order."""
+    bindings = {}
+    if first_frame:
+        path = Path(first_frame)
+        bindings["<Picture 1>"] = {"kind": "image", "source": "first_frame", "file": path.name, "path": str(path)}
+    else:
+        for index, item in enumerate(images, 1):
+            path = Path(item["path"] if isinstance(item, dict) else item)
+            bindings[f"<Picture {index}>"] = {"kind": "image", "source": "image", "file": path.name, "path": str(path)}
+
+    audio_index = 0
+    video_audio_entries = []
+    for index, entry in enumerate(videos, 1):
+        if isinstance(entry, dict):
+            raw_path = entry["path"]
+            use_audio = entry.get("use_audio", True)
+        elif isinstance(entry, (str, os.PathLike)):
+            raw_path, use_audio = entry, True
+        else:
+            raw_path, use_audio = entry
+        path = Path(raw_path)
+        tag = f"<Video {index}>"
+        bindings[tag] = {
+            "kind": "video", "source": "video", "file": path.name, "path": str(path), "use_audio": bool(use_audio),
+        }
+        if use_audio:
+            video_audio_entries.append((tag, path))
+
+    for source_tag, path in video_audio_entries:
+        audio_index += 1
+        bindings[f"<Audio {audio_index}>"] = {
+            "kind": "audio", "source": "video_audio", "from": source_tag, "file": path.name, "path": str(path),
+        }
+
+    for item in audios:
+        audio_index += 1
+        path = Path(item["path"] if isinstance(item, dict) else item)
+        bindings[f"<Audio {audio_index}>"] = {"kind": "audio", "source": "audio", "file": path.name, "path": str(path)}
+
+    return redact(bindings) if redact is not None else bindings
+
+
 def _live_target(state):
     tunnel = state.get("tunnel") or {}
     remote = state.get("remote") or {}
@@ -407,11 +450,23 @@ class ComfyProvider(Provider):
             )
             signals = list(pack.get("signals") or [])
             signals.extend(dict(severity="warn", code="h3_prompt_risk", detail=warning) for warning in warnings)
+            resolved_aspect = (
+                None if ("width" in request.params or "height" in request.params)
+                else request.params.get("aspect", "16:9")
+            )
+            bindings = prompt_bindings(
+                images=wire["images"],
+                audios=wire["audios"],
+                videos=[(item["path"], audio is not None) for item, _, audio, _ in references],
+                first_frame=wire.get("image_path"),
+                redact=lambda value: store.config.redact(self._redact(value)),
+            )
             facts_for_user = {
-                **quote, "task": task, "workflow": workflow, "width": normalized["width"],
-                "height": normalized["height"], "seconds": normalized["seconds"],
+                **quote, "task": task, "workflow": workflow, "aspect": resolved_aspect,
+                "width": normalized["width"], "height": normalized["height"], "seconds": normalized["seconds"],
                 "frames": h3.trim_frames(normalized) or h3.output_frames(normalized), "steps": manifest["steps"],
-                "slots": self.workflow_slots(), "task_key": context["task_key"],
+                "slots": self.workflow_slots(), "prompt_bindings": bindings,
+                "task_key": context["task_key"],
                 "replaced_submission_id": context["replaced_submission_id"],
                 "data_dir_hash": self.config.data_dir_hash,
             }
@@ -493,7 +548,9 @@ class ComfyProvider(Provider):
                 replaced_submission_id=ctx["replaced_submission_id"],
                 extra={
                     "wanted_output_path": str(ctx["wanted"]), "workflow": ctx["workflow"], "tag": request.metadata.get("tag"),
-                    "approved_digest": pf.digest, "quote": pf.facts, "expected_size": [pf.facts["width"], pf.facts["height"]],
+                    "approved_digest": pf.digest,
+                    "quote": {key: val for key, val in pf.facts.items() if key != "prompt_bindings"},
+                    "expected_size": [pf.facts["width"], pf.facts["height"]],
                     "expected_frames": pf.facts["frames"],
                     "has_ref_video": bool(ctx["normalized"].get("videos")),
                     "output_seconds": ctx["normalized"]["seconds"],

@@ -56,7 +56,7 @@ from .base import (
 )
 from .comfy_common import (
     media_stream, stream_seconds, already_delivered, approval_context, approve_generation, deliver_copy, inspect_references, last_frame,
-    output_path as validate_output_path, publish_delivery, record_job_charge, remember_external_billing, request_target, video_metadata,
+    output_path as validate_output_path, prompt_bindings, publish_delivery, record_job_charge, remember_external_billing, request_target, video_metadata,
 )
 from .video_common import default_ffmpeg, default_ffprobe, verify_runninghub_video
 from .runninghub_workflows.catalog import (
@@ -356,6 +356,13 @@ class RunningHubProvider(Provider):
                 estimated_seconds = estimated_points = None
                 estimate_note = "单条 Plus 48GB 横屏 1664×928 样本未覆盖当前配置，暂无积分估算，最终以 chargedPoint 为准。"
             graph_hash = sha256_bytes(canonical_json_bytes(graph))
+            display_aspect = None if ("width" in args or "height" in args) else aspect
+            bindings = prompt_bindings(
+                images=media["images"],
+                audios=media["audios"],
+                videos=[(item["path"], video_spec["use_audio"]) for item, video_spec in zip(media["videos"], video_specs)],
+                redact=lambda value: store.config.redact(self.config.redact(value)),
+            )
             facts = {
                 "estimated_run_seconds": estimated_seconds,
                 "estimated_reference_points": estimated_points,
@@ -409,8 +416,10 @@ class RunningHubProvider(Provider):
                        for w in warnings)
         preflight = PreflightResult(
             self.provider_id, "warn", context["digest"], PRICING_MODE, origin,
-            target_identity=target, input_hashes=hashes, signals=signals, facts={**facts, "task_key": context["task_key"],
-                                   "replaced_submission_id": context["replaced_submission_id"]},
+            target_identity=target, input_hashes=hashes, signals=signals, facts={
+                **facts, "aspect": display_aspect, "prompt_bindings": bindings, "task_key": context["task_key"],
+                "replaced_submission_id": context["replaced_submission_id"],
+            },
         )
         return preflight, {
             **context, "key": key,

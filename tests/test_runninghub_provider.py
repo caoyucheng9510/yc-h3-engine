@@ -244,3 +244,85 @@ def test_fetch_claimed_job_and_recover_to_another_destination(tmp_path, monkeypa
     summary = summarize_usage(config=config, project="test-shot", account_fp=plan.target_identity["credential_fingerprint"])
     assert summary["jobs"][0]["quantity"] == 1.25
     assert summary["jobs"][0]["count"] == 1
+
+
+def test_runninghub_prompt_bindings_video_audio_shift_mute_and_redaction(tmp_path, monkeypatch):
+    secret = "runninghub-fake-credential"
+    config = runninghub_config(tmp_path, monkeypatch, RUNNINGHUB_API_KEY=secret)
+    provider = RunningHubProvider(config=config, auth_opener=Transport())
+    secret_dir = tmp_path / secret
+    secret_dir.mkdir()
+    img1 = secret_dir / "hero.png"
+    img2 = tmp_path / "scene.png"
+    vid = tmp_path / "motion.mp4"
+    aud = tmp_path / "voice.wav"
+    for p in (img1, img2, vid, aud):
+        p.write_bytes(b"data")
+
+    def fake_probe(path):
+        if path.name == "motion.mp4":
+            return {"streams": [
+                {"codec_type": "video", "index": 0, "width": 1280, "height": 720, "duration": "2.0"},
+                {"codec_type": "audio", "index": 1, "duration": "2.0"},
+            ]}
+        return {"streams": [{"codec_type": "audio", "index": 0, "duration": "2.0"}]}
+
+    monkeypatch.setattr("yc_h3.providers.video_common.default_ffprobe", fake_probe)
+    prompt_two_audios = """subject_definitions: <Subject 1> in <Picture 1>, bg <Picture 2>, motion <Video 1>, sound <Audio 1> and <Audio 2>.
+summary: Summary.
+retention_analysis: Keep.
+detailed_description: [Shot 1] Move.
+overall_soundscape: Ambient.
+non_diegetic_music: N/A
+"""
+    req = GenerationRequest(
+        "video", prompt=prompt_two_audios, output_path=tmp_path / "out.mp4",
+        inputs={"images": [img1, img2], "videos": [vid], "audios": [aud]},
+        params={"width": 640, "height": 384, "seconds": 5},
+    )
+    plan = provider.preflight(req)
+    assert plan.status == "warn", plan.signals
+    assert plan.facts["width"] == 640 and plan.facts["height"] == 384 and plan.facts["aspect"] is None
+    bindings = plan.facts["prompt_bindings"]
+    assert list(bindings.keys()) == ["<Picture 1>", "<Picture 2>", "<Video 1>", "<Audio 1>", "<Audio 2>"]
+    assert bindings["<Picture 1>"]["file"] == "hero.png"
+    assert secret not in bindings["<Picture 1>"]["path"]
+    assert bindings["<Picture 2>"]["file"] == "scene.png"
+    assert bindings["<Video 1>"]["use_audio"] is True
+    assert bindings["<Audio 1>"]["source"] == "video_audio" and bindings["<Audio 1>"]["from"] == "<Video 1>"
+    assert bindings["<Audio 2>"]["source"] == "audio" and bindings["<Audio 2>"]["file"] == "voice.wav"
+
+    # When reference video is muted, independent audio shifts back to <Audio 1>.
+    prompt_one_audio = prompt_two_audios.replace(" and <Audio 2>", "")
+    muted_req = replace(
+        req, prompt=prompt_one_audio,
+        inputs={"images": [img1, img2], "videos": [{"path": vid, "use_audio": False}], "audios": [aud]},
+    )
+    muted_plan = provider.preflight(muted_req)
+    assert muted_plan.status == "warn", muted_plan.signals
+    muted_bindings = muted_plan.facts["prompt_bindings"]
+    assert list(muted_bindings.keys()) == ["<Picture 1>", "<Picture 2>", "<Video 1>", "<Audio 1>"]
+    assert muted_bindings["<Video 1>"]["use_audio"] is False
+    assert muted_bindings["<Audio 1>"]["source"] == "audio" and muted_bindings["<Audio 1>"]["file"] == "voice.wav"
+
+    # A video stream without audio does not occupy <Audio 1>, even without --mute-reference-video.
+    silent_vid = tmp_path / "silent.mp4"
+    silent_vid.write_bytes(b"silent-video")
+    monkeypatch.setattr(
+        "yc_h3.providers.video_common.default_ffprobe",
+        lambda path: (
+            {"streams": [{"codec_type": "video", "index": 0, "width": 1280, "height": 720, "duration": "2.0"}]}
+            if path.name == "silent.mp4"
+            else {"streams": [{"codec_type": "audio", "index": 0, "duration": "2.0"}]}
+        ),
+    )
+    silent_plan = provider.preflight(replace(
+        req, prompt=prompt_one_audio,
+        inputs={"images": [img1, img1], "videos": [silent_vid], "audios": [aud]},
+    ))
+    assert silent_plan.status == "warn", silent_plan.signals
+    silent_bindings = silent_plan.facts["prompt_bindings"]
+    assert list(silent_bindings.keys()) == ["<Picture 1>", "<Picture 2>", "<Video 1>", "<Audio 1>"]
+    assert silent_bindings["<Picture 1>"]["file"] == silent_bindings["<Picture 2>"]["file"] == "hero.png"
+    assert silent_bindings["<Video 1>"]["use_audio"] is False
+    assert silent_bindings["<Audio 1>"]["source"] == "audio" and silent_bindings["<Audio 1>"]["file"] == "voice.wav"

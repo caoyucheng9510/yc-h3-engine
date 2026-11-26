@@ -36,7 +36,7 @@ from ._http import (
 )
 from .comfy_common import (
     already_delivered, approval_context, approve_generation, deliver_copy, inspect_references, last_frame,
-    output_path as validate_output_path, publish_delivery, record_job_charge, remember_external_billing, request_target, video_metadata,
+    output_path as validate_output_path, prompt_bindings, publish_delivery, record_job_charge, remember_external_billing, request_target, video_metadata,
 )
 from .base import (
     ApprovalRequiredError,
@@ -344,6 +344,28 @@ class ChenyuProvider(Provider):
                 fingerprint=fingerprint, workflow=workflow, params=params, hashes=hashes, facts=facts, target=target,
                 request_facts=request_facts,
             )
+            bindings = prompt_bindings(
+                images=media["images"],
+                audios=media["audios"],
+                redact=lambda value: store.config.redact(self.config.redact(value)),
+            )
+            display_facts = {
+                **facts,
+                "width": expected_size[0] if expected_size else None,
+                "height": expected_size[1] if expected_size else None,
+                "aspect": aspect,
+                "megapixels": float(megapixels),
+                "upscale_2x": flags["upscale_2x"],
+                "seconds": seconds,
+                "frames": facts["expected_frames"],
+                "prompt_bindings": bindings,
+                "task_key": context["task_key"],
+                "replaced_submission_id": context["replaced_submission_id"],
+            }
+            if expected_size is None:
+                display_facts["size_note"] = (
+                    "晨羽按次工作流在当前画幅、像素档位或 2x 超分模式下无法在预检阶段精确推算像素，最终尺寸以成片 ffprobe 探测为准。"
+                )
         except (OSError, TypeError, ValueError, KeyError, AttributeError, ProviderError) as exc:
             return self._blocked("invalid_chenyu_request", redact_secrets(str(exc), key), origin), {}
 
@@ -356,8 +378,7 @@ class ChenyuProvider(Provider):
                        for warning in warnings)
         return PreflightResult(
             self.provider_id, "warn", context["digest"], PRICING_MODE, origin,
-            target_identity=target, input_hashes=hashes, signals=signals, facts={**facts, "task_key": context["task_key"],
-                                   "replaced_submission_id": context["replaced_submission_id"]},
+            target_identity=target, input_hashes=hashes, signals=signals, facts=display_facts,
         ), {
             **context, "key": key,
             "spec": spec, "params": params, "media": media, "file_hashes": file_hashes,

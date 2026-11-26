@@ -65,6 +65,33 @@ def test_registry_only_exposes_supported_workflows_and_builds_graphs(monkeypatch
             registry.workflow_id(obsolete)
 
 
+def test_jinyu_builder_preserves_sparse_video_audio_slot_alignment():
+    from yc_h3.remote.workflows.minimax_h3 import registry
+
+    profile = registry.resolve_hardware_profile(96, 96, "offline GPU")
+    workflow = registry.get_workflow("jinyu-hybrid")
+    params = workflow.normalize(
+        "r2v",
+        {
+            "workflow": "jinyu-hybrid",
+            "prompt": "Offline sparse audio graph",
+            "seed": 7,
+            "images": ["hero.png"],
+            "videos": [{"path": "silent.mp4", "use_audio": False}, {"path": "spoken.mp4", "use_audio": True}],
+            "audios": ["voice.wav"],
+        },
+        profile,
+    )
+    graph, _ = workflow.build(params, profile, "job_sparse")
+    ref_node = next(node for node in graph.values() if node["class_type"] == "MiniMaxH3ReferenceToVideo")
+    inputs = ref_node["inputs"]
+    assert "ref_images.ref_image_0" in inputs
+    assert "ref_videos.ref_video_0" in inputs and "ref_videos.ref_video_1" in inputs
+    assert "ref_video_audios.ref_video_audio_0" not in inputs
+    assert "ref_video_audios.ref_video_audio_1" in inputs
+    assert "ref_audios.ref_audio_0" in inputs
+
+
 @pytest.mark.parametrize("invalid", ["missing", "mismatched", "unsupported"])
 def test_registry_rejects_invalid_plugin_manifests(tmp_path, invalid):
     from yc_h3.remote.workflows.minimax_h3 import registry

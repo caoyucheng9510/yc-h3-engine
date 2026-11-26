@@ -88,7 +88,7 @@ def _parser():
     providers.add_argument("--remote", action="store_true", help="查询通道实时余额")
     _json_flag(providers)
 
-    workflows = commands.add_parser("workflows", help="列出内置工作流与素材槽位")
+    workflows = commands.add_parser("workflows", help="列出内置工作流、分辨率规格与素材槽位")
     _provider_flag(workflows)
     workflows.add_argument("--remote", action="store_true", help="同时查询已连接受管 GPU 的工作流目录")
     _json_flag(workflows)
@@ -101,20 +101,35 @@ def _parser():
         prompt = gen.add_mutually_exclusive_group(required=True)
         prompt.add_argument("--prompt", help="完整 MiniMax H3 提示词")
         prompt.add_argument("--prompt-file", type=Path, help="UTF-8 提示词文件，使用 - 从标准输入读取")
-        gen.add_argument("--image", type=Path, action="append", help="参考图，可重复")
-        gen.add_argument("--audio", type=Path, action="append", help="参考音频，可重复")
-        gen.add_argument("--video", type=Path, action="append", help="参考视频，可重复")
-        gen.add_argument("--first-frame", type=Path, help="ComfyUI i2v 首帧")
-        gen.add_argument("--mute-reference-video", action="store_true", help="忽略所有参考视频伴音")
-        gen.add_argument("--seconds", type=float)
-        gen.add_argument("--aspect")
-        gen.add_argument("--width", type=int)
-        gen.add_argument("--height", type=int)
-        gen.add_argument("--seed", type=int)
-        gen.add_argument("--steps", type=int)
-        gen.add_argument("--megapixels", type=float, help="晨羽按次 API 分辨率档位")
-        for field in ("upscale-2x", "save-last-frame", "no-music", "trim-to-requested-seconds"):
-            gen.add_argument(f"--{field}", action="store_true", default=None)
+        gen.add_argument("--image", type=Path, action="append",
+                         help="参考图，可重复；按传入顺序对应提示词 <Picture 1>, <Picture 2>...")
+        gen.add_argument("--audio", type=Path, action="append",
+                         help="参考音频，可重复；对应 <Audio N>（有伴音参考视频排在最前，独立音频依次顺延）")
+        gen.add_argument("--video", type=Path, action="append",
+                         help="参考视频，可重复；按传入顺序对应 <Video 1>, <Video 2>...（默认保留伴音并占用前置 <Audio N>）")
+        gen.add_argument("--first-frame", type=Path,
+                         help="ComfyUI i2v 单独首帧，对应 <Picture 1>（仅 colab-comfy / chenyu-comfy）")
+        gen.add_argument("--mute-reference-video", action="store_true",
+                         help="忽略全部参考视频伴音（避免参考视频占用 <Audio N>）")
+        gen.add_argument("--seconds", type=float,
+                         help="目标时长（秒），默认 5（runninghub/comfy 支持 0.2–15 小数，chenyu 仅 1–15 整数）")
+        gen.add_argument("--aspect",
+                         help="预设画幅，默认 16:9（1664×928）；runninghub/comfy 支持 16:9|9:16|1:1，chenyu 支持 8 种画幅；与 --width/--height 互斥")
+        gen.add_argument("--width", type=int,
+                         help="自定义宽度（32 的正整数倍，须与 --height 成对使用且与 --aspect 互斥；不支持 chenyu）")
+        gen.add_argument("--height", type=int,
+                         help="自定义高度（32 的正整数倍，须与 --width 成对使用且与 --aspect 互斥；不支持 chenyu）")
+        gen.add_argument("--seed", type=int, help="随机种子（-1 随机，或 64 位无符号整数；不支持 chenyu）")
+        gen.add_argument("--steps", type=int, help="采样步数（runninghub 支持 7–100 默认 12；comfy 固定 12；不支持 chenyu）")
+        gen.add_argument("--megapixels", type=float,
+                         help="晨羽按次 API 像素档位（0.2–2.0，默认 1.5；16:9 下 1.5 对应 1664×928）")
+        gen.add_argument("--upscale-2x", action="store_true", default=None, help="晨羽按次 API 开启 2 倍超分")
+        gen.add_argument("--save-last-frame", action="store_true", default=None,
+                         help="生成后额外导出末帧图片（runninghub / chenyu 支持）")
+        gen.add_argument("--no-music", action="store_true", default=None,
+                         help="无背景配乐（缺段时自动补 non_diegetic_music: N/A，已有非 N/A 配乐则阻断）")
+        gen.add_argument("--trim-to-requested-seconds", action="store_true", default=None,
+                         help="ComfyUI 通道按目标秒数裁切 17k+5 网格多余尾帧")
         gen.add_argument("--out", type=Path, required=True, help="目标 MP4 路径，重名时递增版本")
         gen.add_argument("--job-key", help="指定断点键，默认从 --out 生成")
         gen.add_argument("--tag", help="费用台账分组")
@@ -228,6 +243,70 @@ def _print(value, *, file=None):
     print(value.encode(encoding, errors="backslashreplace").decode(encoding), file=file)
 
 
+def _render_json(value, *, file=None):
+    target = file or sys.stdout
+    rendered = json.dumps(value, ensure_ascii=False, indent=2, allow_nan=False)
+    try:
+        rendered.encode(getattr(target, "encoding", None) or "utf-8")
+    except UnicodeEncodeError:
+        rendered = json.dumps(value, ensure_ascii=True, indent=2, allow_nan=False)
+    _print(rendered, file=target)
+
+
+def _print_preflight_summary(value):
+    facts = value.get("facts")
+    if not isinstance(facts, dict):
+        return
+    width, height = facts.get("width"), facts.get("height")
+    seconds = facts.get("seconds")
+    frames = facts.get("frames") if facts.get("frames") is not None else facts.get("expected_frames")
+    aspect = facts.get("aspect")
+    has_seconds = type(seconds) in (int, float)
+    has_frames = type(frames) is int
+    timing = f"{seconds}s" + (f"（{frames} 帧 @ 24fps）" if has_frames else "") if has_seconds else ""
+    if type(width) is int and type(height) is int:
+        size_text = f"{width}x{height}" + (f"（{aspect}）" if isinstance(aspect, str) and aspect else "")
+        _print(f"规格 {size_text}" + (f"，{timing}" if timing else ""))
+    elif isinstance(aspect, str) and aspect:
+        mp = facts.get("megapixels")
+        up = " + 2x 超分" if facts.get("upscale_2x") is True else ""
+        spec_text = (
+            f"画幅 {aspect}"
+            + (f" / {mp} MP" if type(mp) in (int, float) else "")
+            + up + "（预检阶段像素待成片确认）"
+        )
+        _print(f"规格 {spec_text}" + (f"，{timing}" if timing else ""))
+    bindings = facts.get("prompt_bindings")
+    if isinstance(bindings, dict):
+        paths_by_file = {}
+        for info in bindings.values():
+            if isinstance(info, dict) and info.get("file"):
+                paths_by_file.setdefault(info["file"], set()).add(info.get("path") or info["file"])
+        ambiguous_files = {name for name, paths in paths_by_file.items() if len(paths) > 1}
+        for tag, info in bindings.items():
+            if not isinstance(info, dict):
+                continue
+            file_name = info.get("file") or ""
+            raw_path = info.get("path") or ""
+            if file_name in ambiguous_files and raw_path:
+                parent = Path(raw_path).parent.name
+                label = f"{parent}/{file_name}" if parent else raw_path
+                if sum(1 for p in paths_by_file[file_name] if Path(p).parent.name == parent) > 1:
+                    label = raw_path
+            else:
+                label = file_name or raw_path
+            source = info.get("source")
+            if source == "video_audio" and info.get("from"):
+                suffix = f"（来自 {info['from']} 伴音）"
+            elif source == "video" and info.get("use_audio") is False:
+                suffix = "（无伴音）"
+            elif source == "first_frame":
+                suffix = "（首帧）"
+            else:
+                suffix = ""
+            _print(f"素材绑定 {tag} = {label}{suffix}")
+
+
 def _emit(data, args, config=None):
     value = config.redact(data) if config else data
     if not args.json:
@@ -235,17 +314,14 @@ def _emit(data, args, config=None):
             provider = value.get("selected_provider") or value.get("provider_id")
             if provider:
                 _print(f"通道 {provider}")
+            if args.command == "preflight":
+                _print_preflight_summary(value)
             if path := value.get("artifact_path"):
                 _print(f"已交付 {path}")
         elif args.command == "init":
             _print(f".env {value['status']} {value['path']}")
             return
-    rendered = json.dumps(value, ensure_ascii=False, indent=2, allow_nan=False)
-    try:
-        rendered.encode(getattr(sys.stdout, "encoding", None) or "utf-8")
-    except UnicodeEncodeError:
-        rendered = json.dumps(value, ensure_ascii=True, indent=2, allow_nan=False)
-    _print(rendered)
+    _render_json(value)
 
 
 def _init(args):
@@ -649,7 +725,7 @@ def main(argv=None):
         else:
             _print(error["message"], file=sys.stderr)
             if "preflight" in error:
-                _print(json.dumps(error["preflight"], ensure_ascii=False, indent=2), file=sys.stderr)
+                _render_json(error["preflight"], file=sys.stderr)
         return code
 
 

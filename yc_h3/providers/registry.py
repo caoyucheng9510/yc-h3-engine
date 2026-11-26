@@ -68,6 +68,49 @@ def get_provider(provider_id: str, config: EngineConfig) -> Provider:
     raise ValueError(f"未知 Provider {provider_id}")
 
 
+def _workflow_resolution(provider_id, spec):
+    if provider_id == "runninghub":
+        return {
+            "mode": "aspect_or_dimensions",
+            "default_aspect": spec["default_aspect"],
+            "default_size": list(spec["sizes"][spec["default_aspect"]]),
+            "sizes": {name: list(size) for name, size in spec["sizes"].items()},
+            "multiple_of": 32,
+            "max_edge": spec["max_edge"],
+            "max_pixels": spec["max_pixels"],
+            "supports_custom_dimensions": True,
+        }
+    if provider_id == "chenyu":
+        default_size = chenyu_catalog.resolve_expected_size(
+            spec, spec["default_aspect"], spec["default_megapixels"],
+        )
+        return {
+            "mode": "aspect_and_megapixels",
+            "default_aspect": spec["default_aspect"],
+            "default_megapixels": spec["default_megapixels"],
+            "min_megapixels": spec["min_megapixels"],
+            "max_megapixels": spec["max_megapixels"],
+            "default_size": list(default_size) if default_size is not None else None,
+            "aspects": list(spec["aspect_options"]),
+            "known_16_9_sizes": {level: list(size) for level, size in spec["known_16_9_sizes"].items()},
+            "supports_custom_dimensions": False,
+            "supports_upscale_2x": True,
+        }
+    return {
+        "mode": "aspect_or_dimensions",
+        "default_aspect": "16:9",
+        "default_size": list(h3.JINYU_ASPECT_SIZES["16:9"]),
+        "sizes": {name: list(size) for name, size in h3.JINYU_ASPECT_SIZES.items()},
+        "multiple_of": 32,
+        "max_edge": 1664,
+        "max_pixels": h3.JINYU_MAX_PIXELS_HIGH,
+        "tier3_max_edge": 1024,
+        "tier3_max_pixels": 1024 * 544,
+        "tier3_max_size": [1024, 544],
+        "supports_custom_dimensions": True,
+    }
+
+
 def workflow_catalog(provider_id):
     catalog = _CATALOGS.get(provider_id)
     if catalog is not None:
@@ -75,6 +118,8 @@ def workflow_catalog(provider_id):
         return [
             {"workflow": name, "default": name == registry["default"], "provider_id": provider_id,
              "tasks": spec["tasks"], "slots": catalog.workflow_media_caps(spec),
+             "resolution": _workflow_resolution(provider_id, spec),
+             "seconds": {"min": spec["min_seconds"], "max": spec["max_seconds"], "integer_only": provider_id == "chenyu"},
              "description": spec.get("description"), "workflow_id": spec["workflow_id"],
              **({"revision_id": spec["revision_id"]} if "revision_id" in spec else {})}
             for name, spec in registry["workflows"].items()
@@ -82,7 +127,9 @@ def workflow_catalog(provider_id):
     if provider_id in PROVIDER_ORDER:
         return [
             {"workflow": name, "default": name == h3.DEFAULT_WORKFLOW, "provider_id": provider_id,
-             "tasks": json_manifest(name)["tasks"], "slots": ComfyProvider.workflow_slots()}
+             "tasks": json_manifest(name)["tasks"], "slots": ComfyProvider.workflow_slots(),
+             "resolution": _workflow_resolution(provider_id, None),
+             "seconds": {"min": 0.2, "max": 15.0, "tier3_max": 8, "integer_only": False}}
             for name in h3.JINYU_WORKFLOWS
         ]
     raise ValueError(f"未知 Provider {provider_id}")
