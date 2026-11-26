@@ -32,8 +32,8 @@ yc-h3 gpu up --backend colab --session yh3-h3 --gpu AUTO --setup \
 
 - **槽位与参数边界**：
   - 槽位：9 图 + 3 音频 + 3 视频（合计 `<= 12`；参考视频累计 `<= 15s` 且单段 `>= 5` 帧 @ 24fps；有伴音参考视频同时占用音频槽与总量槽，并与独立音频共用累计 `<= 15s` 上限；支持 `--first-frame` 走 `i2v`、`--mute-reference-video`、`--trim-to-requested-seconds`）。
-  - 参数边界：支持 `--aspect`（`16:9`/`9:16`/`1:1`）或 32 倍数 `--width`/`--height`（与 `--aspect` 互斥）、`--seconds 0.2–15.0`、`--seed`；`--out` 须以 `.mp4` 结尾；`--steps` 固定为 `12`（传入其他步数会被拒绝）；**不支持 `--save-last-frame`、`--megapixels`、`--upscale-2x`**。
-  - **显存档位上限（Tier 3）**：若手动指定 `<36 GiB` 显存卡（如 `L4` 24GB），硬上限为 `1024×544`、最长 `8s`；省略尺寸走默认 `16:9`（`1664×928`）会触发 `vram_insufficient` 阻断，须显式传合法 `--width`/`--height` 与 `<= 8s` 时长。
+  - 参数边界：默认 `--aspect 16:9`（`1664×928`），支持 `9:16`（`928×1664`）/`1:1`（`1248×1248`）或 32 倍数 `--width`/`--height`（与 `--aspect` 互斥；高显存最长边 `<= 1664`、总像素 `<= 1,572,864`）、`--seconds 0.2–15.0`、`--seed`；`--out` 须以 `.mp4` 结尾；`--steps` 固定为 `12`（传入其他步数会被拒绝）；**不支持 `--save-last-frame`、`--megapixels`、`--upscale-2x`**。
+  - **显存档位上限（Tier 3）**：若手动指定 `<36 GiB` 显存卡（如 `L4` 24GB），硬上限为最长边 `<= 1024`、总像素 `<= 557,056`（如 `1024×544` 或竖屏 `544×1024`）、最长 `8s`；省略尺寸走默认 `16:9`（`1664×928`）会触发 `vram_insufficient` 阻断，须显式传合法 `--width`/`--height` 与 `<= 8s` 时长。
 - **审批要求**：每次 `gen` 须先 `preflight` 获取实时 `approve_digest`（涵盖 `pass` 与 `warn`），且两步参数（含 `--tag`）须完全一致。
 - **本地实跑自校准预估**：单镜 `preflight` 优先读取本地单作业 `perf.json` 归档，按 `workload_key` 精确匹配计算中位数（`estimate_source: "local_history_exact"`，暖跑优先、冷跑可用）；无有效精确耗时时，再回退读取 `<data_dir>/perf/observations.jsonl`（由成片交付后尽力写入；指定历史远端作业补领不会新写观测）按同卡型、同工作流、同参考视频类别做暖跑归一化估算（`estimate_source: "local_history_normalized"`）；均无可用样本时为 `estimate_source: "uncalibrated"`。单镜预估 CU（`estimated_quantity`）按估算耗时与当前会话实时 `billing_rate_per_hour`（`CU/hr`）折算，可选 `COLAB_CNY_PER_CU` 仅用于折算 `estimated_cny`（同时返回 `estimate_seconds`、`estimated_wall_seconds`、`estimate_samples`）。
 - **释放保护**：存在活跃受管会话时，`yc-h3 daemon stop` 默认拒绝退出，须先 `yc-h3 gpu stop --backend colab`，或显式加 `--stop-colab` / `--detach-colab`。

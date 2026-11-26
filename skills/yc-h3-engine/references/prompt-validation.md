@@ -29,6 +29,7 @@ CLI 会按 `--task`（或根据传入素材自动推断）映射到对应校验�
 - 重复传入的 `--image` 按命令行顺序对应 `<Picture 1>`, `<Picture 2>`...（`i2v` 模式下 `--first-frame` 对应 `<Picture 1>`）。
 - 重复传入的 `--video` 按命令行顺序对应 `<Video 1>`, `<Video 2>`...
 - **视频伴音对 `<Audio N>` 的占位规则**：当同时传入有伴音的参考视频与独立 `--audio` 时，启用伴音的参考视频音轨排在最前（占 `<Audio 1>`...），独立 `--audio` 依次顺延。如果只想借参考视频画面、不要其原声，请加 `--mute-reference-video`（该开关会静音全部参考视频）。
+- **提交前以 `facts.prompt_bindings` 复核顺序**：`yc-h3 preflight --json` 会在 `facts.prompt_bindings` 中返回每个 `<Picture N>` / `<Video N>` / `<Audio N>` 实际绑定的文件名、路径及视频伴音来源（非 `--json` 模式也会在顶部打印「素材绑定」行）。离线校验只能拦住编号越界，不能自动发现「两张图顺序传反」，提交前应逐条核对此表与提示词中的角色/场景/声音语义是否一致。
 
 ## 4. `--no-music` 行为与正/负向措辞
 

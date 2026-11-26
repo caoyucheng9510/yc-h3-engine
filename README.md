@@ -38,7 +38,7 @@
 | :--- | :--- | :--- | :--- | :--- |
 | **新手首选（填 Key + 副本 ID 就能跑）** | `runninghub` | Win / macOS / Linux | 6 图 + 3 音 + 1 视频（视频伴音占音频槽，音/视频各限累计 15s） | 48GB Plus 云端托管，不用管 GPU 运维，支持参考视频和自定义 seed/steps |
 | **高性价比 / 5090 按次出片** | `chenyu` | Win / macOS / Linux | 9 图 + 3 音（无视频，音频累计 ≤ 15s） | 5090 纯推理快（5s–11s 仅 2.2–4.8 min）且单价低（公开价约 ¥0.29–¥0.61/单），填 Key 免复制即用；2026-11-24 实测内容审查排队约 20–30+ min（平台持续优化中），暂不支持参考视频 |
-| **连续批跑（Windows 友好）** | `chenyu-comfy` | Win / macOS / Linux | 9 图 + 3 音 + 3 视频（合计 ≤ 12，视频伴音占音频与总量槽且共用 15s 音频上限） | 晨羽独占 GPU，和 `chenyu` 共用同一个 API Key 和钱包，纯 HTTPS 不用折腾 SSH，支持存私有镜像复用环境 + 持久盘复用权重 |
+| **连续批跑 / 独占 GPU 复用权重** | `chenyu-comfy` | Win / macOS / Linux | 9 图 + 3 音 + 3 视频（合计 ≤ 12，视频伴音占音频与总量槽且共用 15s 音频上限） | 晨羽独占 GPU，和 `chenyu` 共用同一个 API Key 和钱包，全平台纯 HTTPS 不用折腾 SSH，支持存私有镜像复用环境 + 持久盘复用权重 |
 | **手里有 Colab Pro+ 额度** | `colab-comfy` | macOS / Linux / WSL2 | 9 图 + 3 音 + 3 视频（合计 ≤ 12，视频伴音占音频与总量槽且共用 15s 音频上限） | 托管 Google Colab（优先 G4 96GB / H100 / A100），适合已有 CU 额度时批量出片 |
 
 > 各通道更细的耗时、显存、样本量和费率口径都整理在 [docs/BENCHMARKS.md](docs/BENCHMARKS.md)。
@@ -228,6 +228,22 @@ yc-h3 gen --provider runninghub --workflow jinyu-hybrid \
 
 换后端只要改 `--provider`（比如 `chenyu`、`chenyu-comfy`、`colab-comfy`），或者干脆省略，让引擎按你的素材要求自动挑能跑的通道。
 
+### 分辨率怎么看、怎么调
+
+- **默认分辨率**：所有通道默认按 `16:9` 生成 **`1664×928`**（`24fps`，时长按 `17k+5` 帧网格对齐）。每次跑 `yc-h3 preflight` 都会在返回结果的 `facts.width` / `facts.height`（非 `--json` 模式也会在顶部摘要行）标出本次实际分辨率。
+- **按通道调整方式**（完整画幅与像素上限可随时运行 `yc-h3 workflows --json` 查看）：
+  - **`runninghub` / `chenyu-comfy` / `colab-comfy`**：用 `--aspect` 切换预设（`16:9` = `1664×928`、`9:16` = `928×1664`、`1:1` = `1248×1248`），或成对传入 32 倍数的 `--width` 与 `--height`（与 `--aspect` 互斥；高显存档位最长边 `<= 1664`、总像素 `<= 1,572,864`）。注意受管 ComfyUI 的 `<36 GiB` 显存卡（如 5090 32GB / L4 24GB）硬上限为**最长边 `<= 1024`、总像素 `<= 557,056`（如 `1024×544` 或竖屏 `544×1024`）、最长 `8s`**，需要显式传 `--width`/`--height`。
+  - **`chenyu`（按次 API）**：不支持 `--width`/`--height`，改用 `--aspect`（支持 `16:9`、`9:16`、`1:1`、`4:3`、`3:4`、`3:2`、`2:3`、`21:9`）+ `--megapixels`（`0.2–2.0`，默认 `1.5`；`16:9` 下 `1.5` 对应 `1664×928`，`2.0` 对应 `1920×1088`）+ 可选 `--upscale-2x`。非 `16:9`、非内置已知 `16:9` 像素档位（见 `yc-h3 workflows --json` 的 `known_16_9_sizes`）或开启 `--upscale-2x` 时，预检阶段 `facts.width`/`facts.height` 为 `null`（并附 `facts.size_note`），最终像素以成片探测为准。
+
+### 素材和提示词里的 `<Picture N>` / `<Audio N>` / `<Video N>` 怎么对应
+
+你和 Agent 都**不需要关心底层工作流节点 ID**，按顺序传参即可，引擎会自动绑定到对应节点并在 `preflight` 返回 `facts.prompt_bindings` 供扣费前核对：
+
+- `--image` 按命令行传入顺序对应提示词里的 **`<Picture 1>`、`<Picture 2>`...**（受管 ComfyUI 的 `i2v` 模式下 `--first-frame` 对应 `<Picture 1>`）。
+- `--video` 按命令行传入顺序对应 **`<Video 1>`、`<Video 2>`...**。
+- **视频伴音与 `--audio` 共用 `<Audio N>`**：如果同时传入「有伴音的参考视频」和独立 `--audio`，**参考视频伴音排在最前占 `<Audio 1>`...，独立 `--audio` 依次顺延**；不想要参考视频原声时加 `--mute-reference-video`。
+- `preflight` 会离线拦截编号越界、引用未传入素材或通道不支持的媒体类型，并在 `facts.prompt_bindings`（以及非 `--json` 模式的顶部摘要）里明确列出每个标签绑定的具体文件，确认顺序和提示词一致后再带 `--approve-digest` 提交。
+
 ### 审批摘要字段在哪找
 
 - **`yc-h3 preflight --json`**：取顶层 `approve_digest`，传给 `yc-h3 gen --approve-digest`；
@@ -238,7 +254,7 @@ yc-h3 gen --provider runninghub --workflow jinyu-hybrid \
 
 ```bash
 yc-h3 providers --probe --json              # 看各通道本地配置状态
-yc-h3 workflows --json                      # 看所有内置工作流和素材槽位上限
+yc-h3 workflows --json                      # 看所有内置工作流、分辨率规格和素材槽位上限
 yc-h3 jobs list --json                      # 看任务断点摘要（已脱敏）
 yc-h3 jobs resume <task_key> --json         # 断网恢复并拉回成片（可加 --out 换落盘路径）
 yc-h3 jobs fetch <task_key> --json          # 单次查询并领取已完成成品
@@ -264,7 +280,7 @@ yc-h3 ledger summary --tag demo --json      # 按分组汇总已入账费用
 | :--- | :--- | :--- | :--- | :--- |
 | **RunningHub Plus 48GB** | `jinyu-hybrid` `1664×928` 12 步（2026-11-24 5s/11s 样本子集，共 5 单：5s 纯图 1 单、5s 图音 2 单、11s 图音 2 单） | `wall_total_s`（首次提交到交付）：5s 纯图 `134.9s`、5s 图音两单中位数 `151.0s`；11s 图音两单中位数 `490.0s` | 代码采用单样本校准（`37s/输出秒 × 0.23 积分/运行秒`），最终以接口回报 `chargedPoint` 为准 | 零 GPU 运维，适合当日常主力 |
 | **晨羽按次 API（5090）** | `jinyu-hybrid` 1.5 MP（5s/7s/11s，4 单，无参考视频） | 纯推理 `2.15–4.81 min`；含平台内容审查总墙钟 `37–44 min` | 按公开双钱包费率 `0.12 CNY/推理分钟 + 0.03 CNY/次` 折算约 `¥0.29–¥0.61/单`（排队不扣算力费） | 5090 纯推理快且最省钱；目前受审查排队拖慢（平台持续优化中），暂适合不赶时间或预算优先的镜头 |
-| **晨羽独占 GPU（`chenyu-comfy`）** | 按会话计费（目前还没补齐与其他通道对齐的单镜样本） | `gpu plan` 展示平台小时费率（API 未提供时标注参考费率） | 停机核销优先读实例账单合计双钱包实扣，缺账单时按运行时长与小时费率估算 | 适合 Windows 连续批跑或参考视频复用权重 |
+| **晨羽独占 GPU（`chenyu-comfy`）** | 按会话计费（目前还没补齐与其他通道对齐的单镜样本） | `gpu plan` 展示平台小时费率（API 未提供时标注参考费率） | 停机核销优先读实例账单合计双钱包实扣，缺账单时按运行时长与小时费率估算 | 全平台原生可用免 SSH，适合连续批跑或参考视频复用权重 |
 | **Colab `A100-80`** | `jinyu-hybrid` / `jinyu-combat` `1664×928` 12 步（7 单，含冷/暖跑） | 5.2s 4 图冷跑：权重准备 `1129.7s` + 纯推理 `250.6s`；11.5s 5 图 2 音暖跑纯推理 `607.8s` | 实测 `10.99 CU/hr`（纯推理折算见明细表，不含冷启动下载） | 已有 CU 额度内适合批跑纯图/图音镜头 |
 | **Colab `G4-96` (Blackwell)** | 历史旧配方 `1344×768` 非 SelfLift 12 步（4 单暖跑） | 纯图 10s 纯推理 `151.5–179.1s`；带 10s 视频参考纯推理 `807.2s`（暖跑总耗时 `808.9s`） | 实测 `10.05 CU/hr`（纯图约 `0.43–0.50 CU`，视频参考约 `2.26 CU`） | 历史旧配方基线，现行 `1664×928` SelfLift 新配方待实测 |
 

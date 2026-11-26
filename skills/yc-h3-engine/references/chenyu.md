@@ -17,7 +17,7 @@
   - 工作流：`jinyu-hybrid`（默认）与 `jinyu-combat`（内置公开工作流 `wf_f8b8f8ee12000cebc6bf`，无需复制）。
   - 任务：`r2v`（默认，至少 1 图或 1 音）或 `t2v`；**不支持 `--video`、`--first-frame`、小数 `--seconds`、`--seed`、`--steps`、`--width`、`--height`、`--task i2v`、`--trim-to-requested-seconds`**。
   - 槽位：**9 图 + 3 音频**（单文件 `<= 100 MB`，音频累计 `<= 15s`）。
-  - 参数：`--seconds 1..15`（整数）、`--aspect`（支持 `16:9`/`9:16`/`1:1`/`4:3`/`3:4`/`3:2`/`2:3`/`21:9`）、`--megapixels 0.2..2.0`（默认 `1.5`）、`--upscale-2x`、`--no-music`、`--save-last-frame`。
+  - 参数：`--seconds 1..15`（整数）、`--aspect`（默认 `16:9`，支持 `16:9`/`9:16`/`1:1`/`4:3`/`3:4`/`3:2`/`2:3`/`21:9`）、`--megapixels 0.2..2.0`（默认 `1.5`，`16:9` 下对应 `1664×928`；非 `16:9`、非 `known_16_9_sizes` 已知档位或开启 `--upscale-2x` 时预检 `facts.width`/`facts.height` 为 `null` 并附 `facts.size_note`）、`--upscale-2x`、`--no-music`、`--save-last-frame`。
 
 ```bash
 yc-h3 ledger balance sync --provider chenyu --json
@@ -39,8 +39,8 @@ yc-h3 gen --provider chenyu --workflow jinyu-hybrid \
 - **适用**：持续批跑、需要参考视频 / 小数秒 / 自定义 seed / 私有镜像复用环境 + 持久盘复用权重，且无需本地守护进程与 SSH（Windows 原生可用）。
 - **槽位与参数边界**：
   - 槽位：9 图 + 3 音频 + 3 视频（合计 `<= 12`；参考视频累计 `<= 15s` 且单段 `>= 5` 帧 @ 24fps；有伴音参考视频同时占用音频槽与总量槽，并与独立音频共用累计 `<= 15s` 上限；支持 `--first-frame` 走 `i2v`、`--mute-reference-video`、`--trim-to-requested-seconds`）。
-  - 参数边界：支持 `--aspect`（`16:9`/`9:16`/`1:1`）或 32 倍数 `--width`/`--height`（与 `--aspect` 互斥）、`--seconds 0.2–15.0`、`--seed`；`--out` 须以 `.mp4` 结尾；`--steps` 固定为 `12`（传入其他步数会被拒绝）；**不支持 `--save-last-frame`、`--megapixels`、`--upscale-2x`**。
-  - **显存档位上限（Tier 3）**：`<36 GiB` 显存卡（含 `--gpu AUTO` 第三顺位 `5090` 32GB、`nGPU-32GB`、`4090D` 24GB）硬上限为 `1024×544`、最长 `8s`；省略尺寸走默认 `16:9`（`1664×928`）会触发 `vram_insufficient` 阻断，须显式传合法 `--width`/`--height`（如 `1024×544`）与 `<= 8s` 时长。
+  - 参数边界：默认 `--aspect 16:9`（`1664×928`），支持 `9:16`（`928×1664`）/`1:1`（`1248×1248`）或 32 倍数 `--width`/`--height`（与 `--aspect` 互斥；高显存最长边 `<= 1664`、总像素 `<= 1,572,864`）、`--seconds 0.2–15.0`、`--seed`；`--out` 须以 `.mp4` 结尾；`--steps` 固定为 `12`（传入其他步数会被拒绝）；**不支持 `--save-last-frame`、`--megapixels`、`--upscale-2x`**。
+  - **显存档位上限（Tier 3）**：`<36 GiB` 显存卡（含 `--gpu AUTO` 第三顺位 `5090` 32GB、`nGPU-32GB`、`4090D` 24GB）硬上限为最长边 `<= 1024`、总像素 `<= 557,056`（如 `1024×544` 或竖屏 `544×1024`）、最长 `8s`；省略尺寸走默认 `16:9`（`1664×928`）会触发 `vram_insufficient` 阻断，须显式传合法 `--width`/`--height` 与 `<= 8s` 时长。
 - **生命周期、查卡、私有镜像与计费护栏**：
   - **实时查卡、回退顺位与时限参数**：`gpu plan --backend chenyu --gpu AUTO --json` 严格只读，会实时拉取晨羽 `/gpu/list` 返回各候选卡的 `available` / `stock` 与小时价；`--gpu AUTO` 默认按 **`6000D-84G → nGPU-48GB → 5090`** 自动回退（亦支持单卡或逗号顺位，另预设 `nGPU-32GB`、`4090D`）。`--max-runtime-minutes` 默认 `120`（范围 `1–1440`）；**`--idle-minutes` 默认 `30`，仅允许离散值 `0 / 10 / 30 / 60 / 120`**（传其他整数会报参数错误）。
   - 建机前冻结绝对截止时间，建机回执丢失时在当前命令内自动认领并挂平台定时停机与空闲销毁护栏；若进程在挂护栏前被强杀/断电，务必运行 `yc-h3 gpu reconcile --backend chenyu` 或登录晨羽网页端核查。

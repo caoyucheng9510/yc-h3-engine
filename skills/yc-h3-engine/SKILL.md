@@ -56,10 +56,12 @@ compatibility: 跨平台 CLI（Python >= 3.12、FFmpeg/FFprobe）；RunningHub�
 
 | 场景 | 通道 (`--provider`) | 素材槽位上限 | 关键参数边界与平台约束 |
 | :--- | :--- | :--- | :--- |
-| 零运维日常主力 / 需参考视频 | `runninghub` | 6 图 + 3 音 + 1 视频（视频伴音占音频槽，音/视频各限 15s） | 48GB Plus；支持小数秒、`--seed`/`--steps`（7–100）/`--save-last-frame`；不支持 `--first-frame`/`--megapixels`/`--upscale-2x`/`--trim-to-requested-seconds`；需配 Key + 副本 ID |
-| 低单价按次补镜（不赶时间） | `chenyu` | 9 图 + 3 音（**无视频**，音频累计 ≤ 15s） | 5090 按次，需双钱包有余额；仅整数秒（1–15），支持 `--megapixels`/`--upscale-2x`/`--save-last-frame`；不支持视频/首帧/seed/steps/宽高；审查排队约 20–30+ 分钟 |
-| 持续批跑 / 参考视频（全平台含 Win） | `chenyu-comfy` | 9 图 + 3 音 + 3 视频（合计 ≤ 12；视频累计 ≤ 15s，音频含视频伴音占音频与总量槽且累计 ≤ 15s） | 晨羽独占 GPU，纯 HTTPS 无需 SSH；支持 `--first-frame` (`i2v`) 与 `--trim-to-requested-seconds`；固定 12 步，不支持 `--save-last-frame`/`--megapixels`/`--upscale-2x`；`<36 GiB` 卡（Tier 3）限 `1024×544` / `8s` |
-| 已有 Colab CU 额度大批量跑片 | `colab-comfy` | 同 `chenyu-comfy`（9 图 + 3 音 + 3 视频，合计 ≤ 12，音/视频各限 15s） | 仅 macOS / Linux / Windows WSL2（原生 Win 自动拦截退出码 `3`）；参数与显存档位约束同 `chenyu-comfy` |
+| 零运维日常主力 / 需参考视频 | `runninghub` | 6 图 + 3 音 + 1 视频（视频伴音占音频槽，音/视频各限 15s） | 48GB Plus；默认 `16:9`（`1664×928`），支持 `9:16`/`1:1` 或 32 倍数 `--width`/`--height`（最长边 `<=1664`、总像素 `<=1,572,864`）；支持小数秒、`--seed`/`--steps`（7–100）/`--save-last-frame`；不支持 `--first-frame`/`--megapixels`/`--upscale-2x`/`--trim-to-requested-seconds`；需配 Key + 副本 ID |
+| 低单价按次补镜（不赶时间） | `chenyu` | 9 图 + 3 音（**无视频**，音频累计 ≤ 15s） | 5090 按次，需双钱包有余额；仅整数秒（1–15），默认 `16:9` + `1.5 MP`（`1664×928`），支持 8 种 `--aspect` / `--megapixels 0.2–2.0` / `--upscale-2x` / `--save-last-frame`（非 `16:9`、非已知 `16:9` 像素档位或 2x 超分时预检像素为 `null` 并附 `size_note`）；不支持视频/首帧/seed/steps/宽高；审查排队约 20–30+ 分钟 |
+| 持续批跑 / 参考视频（全平台含 Win） | `chenyu-comfy` | 9 图 + 3 音 + 3 视频（合计 ≤ 12；视频累计 ≤ 15s，音频含视频伴音占音频与总量槽且累计 ≤ 15s） | 晨羽独占 GPU，纯 HTTPS 无需 SSH；默认 `16:9`（`1664×928`），支持 `9:16`/`1:1` 或 32 倍数 `--width`/`--height`（高显存最长边 `<=1664`、总像素 `<=1,572,864`）、`--first-frame` (`i2v`) 与 `--trim-to-requested-seconds`；固定 12 步，不支持 `--save-last-frame`/`--megapixels`/`--upscale-2x`；`<36 GiB` 卡（Tier 3）限最长边 `<=1024`、总像素 `<=557,056`（如 `1024×544` 或 `544×1024`）、最长 `8s` |
+| 已有 Colab CU 额度大批量跑片 | `colab-comfy` | 同 `chenyu-comfy`（9 图 + 3 音 + 3 视频，合计 ≤ 12，音/视频各限 15s） | 仅 macOS / Linux / Windows WSL2（原生 Win 自动拦截退出码 `3`）；分辨率、参数与显存档位约束同 `chenyu-comfy` |
+
+> 各通道完整的画幅预设、像素上限与时长约束可随时运行只读命令 `yc-h3 workflows --json` 查询。
 
 - **通道顺位与自动选路检查**：
   - 选路优先级：**当轮用户明确指定 > 当前项目规则（如 `AGENTS.md`）> `.env` 的 `YC_H3_PROVIDER_ORDER`（`yc-h3 doctor --json` 的 `provider_order` 或 `yc-h3 providers --json`）> 默认顺位（`colab-comfy → chenyu-comfy → runninghub → chenyu`）**。
@@ -74,7 +76,7 @@ compatibility: 跨平台 CLI（Python >= 3.12、FFmpeg/FFprobe）；RunningHub�
    - **受管 GPU 开机 / 改时限**：先 `yc-h3 gpu plan --backend colab|chenyu ... --json` 取顶层 **`digest`** → 用户批准后原样参数追加 `--approve-digest <digest>` 执行 `yc-h3 gpu up`。
    - **晨羽保存私有镜像**：存在可保存的运行中实例时，先不带摘要跑 `yc-h3 gpu save-image --backend chenyu --json`（计划生成成功后返回退出码 `2` 并向 stderr 打错误 JSON；若实例已停或有待核对状态会先以退出码 `3` 退出），取错误 JSON 中的 **`preflight.approve_digest`** → 用户批准后原样追加 `--approve-digest` 执行（会在锁内核验是否存在未取回成片，防止丢片）。
 2. **报价汇报口径**：
-   请用户审批时，固定汇报四项：**实际通道**（若跳过了首选通道须说明 `routing_skipped` 原因）、**最终输出路径（`--out`）**、**预估来源**（按 `facts.estimate_source` 与 `facts.estimate_samples` 译为「本地实跑 N 单 / 初始基线 / 暂无估算」）、以及 **`facts` 中实际非空的预计耗时与费用**（耗时：`estimated_wall_seconds` / `estimated_run_seconds` / `estimate_seconds`；费用：`estimated_reference_points` / `estimated_quantity` / `estimated_cny`）。缺失或为 `null` 的单项如实报「暂无估算」，不臆造数字。各通道估算拟合细节见对应通道参考文档。
+   请用户审批时，固定汇报六项：**实际通道**（若跳过了首选通道须说明 `routing_skipped` 原因）、**最终输出路径（`--out`）**、**目标分辨率与时长**（按 `facts.width × facts.height`、`facts.seconds` / `facts.frames` 汇报；晨羽按次若 `width`/`height` 为 `null`，改报 `facts.aspect` + `facts.megapixels` + 是否 `upscale_2x` 及 `facts.size_note` 说明）、**素材标签绑定对照**（有参考素材时，按 `facts.prompt_bindings` 逐项列出 `<Picture N>` / `<Video N>` / `<Audio N>` 对应的文件名及视频伴音来源，便于用户在扣费前核对顺序）、**预估来源**（按 `facts.estimate_source` 与 `facts.estimate_samples` 译为「本地实跑 N 单 / 初始基线 / 暂无估算」）、以及 **`facts` 中实际非空的预计耗时与费用**（耗时：`estimated_wall_seconds` / `estimated_run_seconds` / `estimate_seconds`；费用：`estimated_reference_points` / `estimated_quantity` / `estimated_cny`）。缺失或为 `null` 的单项如实报「暂无估算」，不臆造数字。各通道估算拟合细节见对应通道参考文档。
 3. **断点恢复与防重复扣费**：
    建单前 CLI 会落盘断点，断线或超时后远端可能仍在计费执行，直接重提会导致重复扣费：
    - 先查 `yc-h3 jobs list --json`，再按状态恢复：对 `chenyu` / `colab-comfy` / `chenyu-comfy` 的 `ambiguous` 断点或待续拉任务优先跑 `yc-h3 jobs resume <task_key> --json`（可按本地幂等键安全核对/重放并持续轮询）；`yc-h3 jobs fetch <task_key> --json` 仅单次查取，不做幂等重放（二者均支持 `--out <new_path>` 换路径、`--remote-job-id <id>` 补领历史作业）。`runninghub` 无远端幂等键，`ambiguous` 时须先核实远端任务再带 `--remote-task-id` 认领，确认未扣费才可重提；
@@ -117,6 +119,6 @@ yc-h3 ledger record --provider runninghub --quantity 120 --unit point --idempote
 ```
 
 **执行期高频提示词避坑（完整校验口径与 `preflight` 报错排查见 [references/prompt-validation.md](references/prompt-validation.md)）**：
-- **素材编号对齐**：`--image` 按顺序对应 `<Picture 1>`, `<Picture 2>`...；`--video` 按顺序对应 `<Video 1>`, `<Video 2>`...；同时传**有伴音参考视频**与独立音频时，视频伴音排在 `<Audio 1>`，独立音频依次顺延（不需要视频原声时加 `--mute-reference-video`）。
+- **素材编号对齐与顺序复核**：引擎会自动把按顺序传入的素材映射到各后端工作流节点，无需关心底层节点 ID；`--image` 对应 `<Picture 1>`, `<Picture 2>`...，`--video` 对应 `<Video 1>`, `<Video 2>`...，有伴音参考视频排在 `<Audio 1>`、独立 `--audio` 依次顺延（不需要视频原声时加 `--mute-reference-video`）。注意 `preflight` 只能拦截编号越界，无法自动识别「传参顺序与提示词语义写反」；**每次跑完 `preflight` 必须逐项核对 `facts.prompt_bindings` 与提示词中各标签所指代的对象一致后再请用户确认**。
 - **`--no-music` 冲突规则**：传 `--no-music` 时，若提示词缺失 `non_diegetic_music:` 段会由 CLI 自动补为 `N/A`；若已写该段，其内容必须为 `N/A`，写了其他配乐描述或留空都会被拒。
 - **单图任务别错用 `--first-frame`**：在 `runninghub` / `chenyu` 上单图参考应走 `--image`（`r2v`），不要传 `--first-frame`（仅 `colab-comfy` / `chenyu-comfy` 支持 `--first-frame` 走 `i2v`）。
