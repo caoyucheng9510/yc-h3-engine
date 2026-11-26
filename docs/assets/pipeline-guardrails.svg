@@ -1,0 +1,141 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1040 340">
+  <style>
+    :root {
+      --bg: #0f172a;
+      --bg-grid: #1e293b;
+      --mask: #0f172a;
+      --text: white;
+      --text-muted: #94a3b8;
+      --arrow: #64748b;
+      --color-primary-fill: rgba(8,51,68,0.4);
+      --color-primary-stroke: #22d3ee;
+      --color-secondary-fill: rgba(6,78,59,0.4);
+      --color-secondary-stroke: #34d399;
+      --color-tertiary-fill: rgba(76,29,149,0.4);
+      --color-tertiary-stroke: #a78bfa;
+      --color-accent-fill: rgba(120,53,15,0.3);
+      --color-accent-stroke: #fbbf24;
+      --color-alert-fill: rgba(136,19,55,0.4);
+      --color-alert-stroke: #fb7185;
+      --color-connector-fill: rgba(251,146,60,0.3);
+      --color-connector-stroke: #fb923c;
+      --color-neutral-fill: rgba(30,41,59,0.5);
+      --color-neutral-stroke: #94a3b8;
+      --color-highlight-fill: rgba(59,130,246,0.3);
+      --color-highlight-stroke: #60a5fa;
+    }
+    text {
+      font-family: 'JetBrains Mono', 'Noto Sans SC', 'PingFang SC', 'SF Mono', sans-serif;
+    }
+  </style>
+
+  <defs>
+    <pattern id="grid" width="40" height="40" patternUnits="userSpaceOnUse">
+      <path d="M 40 0 L 0 0 0 40" fill="none" stroke="var(--bg-grid)" stroke-width="0.5"/>
+    </pattern>
+    <marker id="arrow" markerWidth="10" markerHeight="7" refX="9" refY="3.5" orient="auto">
+      <polygon points="0 0, 10 3.5, 0 7" fill="var(--arrow)"/>
+    </marker>
+    <marker id="arrow-primary" markerWidth="10" markerHeight="7" refX="9" refY="3.5" orient="auto">
+      <polygon points="0 0, 10 3.5, 0 7" fill="var(--color-primary-stroke)"/>
+    </marker>
+    <marker id="arrow-secondary" markerWidth="10" markerHeight="7" refX="9" refY="3.5" orient="auto">
+      <polygon points="0 0, 10 3.5, 0 7" fill="var(--color-secondary-stroke)"/>
+    </marker>
+    <marker id="arrow-alert" markerWidth="10" markerHeight="7" refX="9" refY="3.5" orient="auto">
+      <polygon points="0 0, 10 3.5, 0 7" fill="var(--color-alert-stroke)"/>
+    </marker>
+    <marker id="arrow-connector" markerWidth="10" markerHeight="7" refX="9" refY="3.5" orient="auto">
+      <polygon points="0 0, 10 3.5, 0 7" fill="var(--color-connector-stroke)"/>
+    </marker>
+  </defs>
+
+  <!-- Layer 1: Background + Grid -->
+  <rect width="100%" height="100%" fill="var(--bg)"/>
+  <rect width="100%" height="100%" fill="url(#grid)"/>
+
+  <!-- Layer 3: Connection Arrows -->
+  <!-- Step 1 -> Step 2 -->
+  <line x1="236" y1="148" x2="286" y2="148" stroke="var(--color-primary-stroke)" stroke-width="1.8" marker-end="url(#arrow-primary)"/>
+  <!-- Step 2 -> Step 3 -->
+  <line x1="494" y1="148" x2="544" y2="148" stroke="var(--color-secondary-stroke)" stroke-width="1.8" marker-end="url(#arrow-secondary)"/>
+  <!-- Step 3 -> Step 4 -->
+  <line x1="752" y1="148" x2="802" y2="148" stroke="var(--color-secondary-stroke)" stroke-width="1.8" marker-end="url(#arrow-secondary)"/>
+
+  <!-- Safety Net 1: Step 2 -> Cancel Free -->
+  <line x1="391" y1="206" x2="391" y2="254" stroke="var(--color-alert-stroke)" stroke-width="1.5" stroke-dasharray="5,4" marker-end="url(#arrow-alert)"/>
+
+  <!-- Safety Net 2: Step 3 -> Resume on Disconnect -> Step 4 -->
+  <line x1="649" y1="206" x2="649" y2="254" stroke="var(--color-connector-stroke)" stroke-width="1.5" stroke-dasharray="5,4" marker-end="url(#arrow-connector)"/>
+  <path d="M 752,282 L 907,282 L 907,208" fill="none" stroke="var(--color-connector-stroke)" stroke-width="1.5" marker-end="url(#arrow-connector)"/>
+
+  <!-- Layer 4: Opaque Masks -->
+  <rect x="30" y="90" width="206" height="116" rx="8" fill="var(--mask)"/>
+  <rect x="288" y="90" width="206" height="116" rx="8" fill="var(--mask)"/>
+  <rect x="546" y="90" width="206" height="116" rx="8" fill="var(--mask)"/>
+  <rect x="804" y="90" width="206" height="116" rx="8" fill="var(--mask)"/>
+  <rect x="288" y="256" width="206" height="52" rx="8" fill="var(--mask)"/>
+  <rect x="546" y="256" width="206" height="52" rx="8" fill="var(--mask)"/>
+
+  <!-- Layer 5: Component Boxes -->
+  <!-- Step 1: Free Preflight -->
+  <rect x="30" y="90" width="206" height="116" rx="8" fill="var(--color-primary-fill)" stroke="var(--color-primary-stroke)" stroke-width="1.6"/>
+  <!-- Step 2: Human Approval -->
+  <rect x="288" y="90" width="206" height="116" rx="8" fill="var(--color-accent-fill)" stroke="var(--color-accent-stroke)" stroke-width="1.8"/>
+  <!-- Step 3: Cloud Generation -->
+  <rect x="546" y="90" width="206" height="116" rx="8" fill="var(--color-highlight-fill)" stroke="var(--color-highlight-stroke)" stroke-width="1.6"/>
+  <!-- Step 4: Verify & Save -->
+  <rect x="804" y="90" width="206" height="116" rx="8" fill="var(--color-secondary-fill)" stroke="var(--color-secondary-stroke)" stroke-width="1.6"/>
+
+  <!-- Guardrail 1: Cancel with zero cost -->
+  <rect x="288" y="256" width="206" height="52" rx="8" fill="var(--color-alert-fill)" stroke="var(--color-alert-stroke)" stroke-width="1.3" stroke-dasharray="6,3"/>
+  <!-- Guardrail 2: Resume without double charge -->
+  <rect x="546" y="256" width="206" height="52" rx="8" fill="var(--color-connector-fill)" stroke="var(--color-connector-stroke)" stroke-width="1.3" stroke-dasharray="6,3"/>
+
+  <!-- Layer 6: Text Labels -->
+  <!-- Step 1 Text -->
+  <text x="133" y="110" fill="var(--color-primary-stroke)" font-size="9.5" font-weight="600" text-anchor="middle">STEP 1 · 零扣费</text>
+  <text x="133" y="134" fill="var(--text)" font-size="14" font-weight="700" text-anchor="middle">免费预检与报价</text>
+  <text x="133" y="156" fill="var(--text-muted)" font-size="10.5" text-anchor="middle">先查素材和提示词有没有写错</text>
+  <text x="133" y="172" fill="var(--text-muted)" font-size="10.5" text-anchor="middle">提前算出这单大概要花多少钱</text>
+  <text x="133" y="194" fill="var(--color-primary-stroke)" font-size="9" text-anchor="middle">yc-h3 preflight</text>
+
+  <!-- Step 2 Text -->
+  <text x="391" y="110" fill="var(--color-accent-stroke)" font-size="9.5" font-weight="600" text-anchor="middle">STEP 2 · 需你点头</text>
+  <text x="391" y="134" fill="var(--text)" font-size="14" font-weight="700" text-anchor="middle">核对无误再下单</text>
+  <text x="391" y="156" fill="var(--text-muted)" font-size="10.5" text-anchor="middle">看完报价和参数确认没问题</text>
+  <text x="391" y="172" fill="var(--text-muted)" font-size="10.5" text-anchor="middle">未经你同意绝不悄悄扣费</text>
+  <text x="391" y="194" fill="var(--color-accent-stroke)" font-size="9" text-anchor="middle">附带确认摘要提交</text>
+
+  <!-- Step 3 Text -->
+  <text x="649" y="110" fill="var(--color-highlight-stroke)" font-size="9.5" font-weight="600" text-anchor="middle">STEP 3 · 云端出片</text>
+  <text x="649" y="134" fill="var(--text)" font-size="14" font-weight="700" text-anchor="middle">自动调度生成视频</text>
+  <text x="649" y="156" fill="var(--text-muted)" font-size="10.5" text-anchor="middle">交给选好的算力平台跑片</text>
+  <text x="649" y="172" fill="var(--text-muted)" font-size="10.5" text-anchor="middle">自动记好进度，防止重复下单</text>
+  <text x="649" y="194" fill="var(--color-highlight-stroke)" font-size="9" text-anchor="middle">yc-h3 gen</text>
+
+  <!-- Step 4 Text -->
+  <text x="907" y="110" fill="var(--color-secondary-stroke)" font-size="9.5" font-weight="600" text-anchor="middle">STEP 4 · 自动收尾</text>
+  <text x="907" y="134" fill="var(--text)" font-size="14" font-weight="700" text-anchor="middle">验片保存并记账</text>
+  <text x="907" y="156" fill="var(--text-muted)" font-size="10.5" text-anchor="middle">检查视频能正常播、不覆盖旧片</text>
+  <text x="907" y="172" fill="var(--text-muted)" font-size="10.5" text-anchor="middle">顺手记录这单实际花了多少钱</text>
+  <text x="907" y="194" fill="var(--color-secondary-stroke)" font-size="9" text-anchor="middle">FFmpeg 校验 + 自动入账</text>
+
+  <!-- Guardrail 1 Text -->
+  <text x="391" y="278" fill="var(--text)" font-size="11.5" font-weight="600" text-anchor="middle">随时取消 · 不花一分钱</text>
+  <text x="391" y="296" fill="var(--text-muted)" font-size="9.5" text-anchor="middle">觉得太贵或写错了，改好再重新预检</text>
+
+  <!-- Guardrail 2 Text -->
+  <text x="649" y="278" fill="var(--text)" font-size="11.5" font-weight="600" text-anchor="middle">断点续领 · 不重复扣费</text>
+  <text x="649" y="296" fill="var(--text-muted)" font-size="9.5" text-anchor="middle">跑 yc-h3 jobs resume 直接拿回成片</text>
+
+  <!-- Arrow Annotations -->
+  <text x="519" y="138" fill="var(--color-secondary-stroke)" font-size="9.5" font-weight="600" text-anchor="middle">确认</text>
+  <text x="401" y="234" fill="var(--color-alert-stroke)" font-size="9.5">不满意 / 写错了</text>
+  <text x="659" y="234" fill="var(--color-connector-stroke)" font-size="9.5">中途断网 / 关终端</text>
+  <text x="830" y="273" fill="var(--color-connector-stroke)" font-size="9.5" text-anchor="middle">领回后继续验收</text>
+
+  <!-- Layer 8: Title Block -->
+  <text x="30" y="38" fill="var(--text)" font-size="16" font-weight="700">跑一条视频的 4 步安全流程</text>
+  <text x="30" y="58" fill="var(--text-muted)" font-size="10.5">先免费看报价，你点头才真正扣费；中途断网也能直接领回成品，不会白花钱</text>
+</svg>
