@@ -28,7 +28,7 @@ from yc_h3.tasks_store import TaskStore, comfy_job_delivery_state
 from yc_h3.ledger import record_colab_stop
 
 from . import config
-from .colab import Colab
+from .colab import Colab, summarize_cli_error
 from .platform_guard import require_colab_platform
 from .tasks import TaskError, TaskRegistry
 from .tunnel import RemoteUnreachable, Tunnel
@@ -993,7 +993,11 @@ class App:
                 if "rejected" not in outcomes:
                     attempt["outcome"] = "service_unavailable" if "service_unavailable" in outcomes else "out_of_stock"
                 self.settings.mutate(lambda data: data["managed_sessions"].pop(name, None))
-                raise TaskError(f"colab new 失败 ({gpu})：{out[-400:]}")
+                detail = summarize_cli_error(out)
+                if len(attempt["candidates"]) > 1:
+                    tried = "、".join(f"{row['gpu']}[{row['outcome']}]" for row in attempt["candidates"])
+                    raise TaskError(f"colab new 失败 (已依次尝试 {tried})：{detail}")
+                raise TaskError(f"colab new 失败 ({gpu})：{detail}")
             if service_unavailable:
                 task.log(f"Colab 服务暂不可用，{gpu} 未分配，尝试下一候选卡型")
             else:

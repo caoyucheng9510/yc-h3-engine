@@ -276,3 +276,64 @@ def test_colab_retries_balance_settlement_after_stop_without_duplicate_usage(tmp
     assert not settings.reload()["pending_stop_billing"]
     assert len((engine.data_dir / "ledger/usage.jsonl").read_text().splitlines()) == 1
     assert len((engine.data_dir / "ledger/balances.tsv").read_text().splitlines()) == 2
+
+
+def test_summarize_cli_error_strips_rich_and_python_tracebacks():
+    rich_out = (
+        "╭─────────────────── Traceback (most recent call last) ────────────────────╮\n"
+        "│   241 │   │   │   │   response=response,                                 │\n"
+        "╰──────────────────────────────────────────────────────────────────────────╯\n"
+        "ColabRequestError: Failed to issue request POST\n"
+        "https://colab.research.google.com/tun/m/assign?accelerator=A100: Service Unavailable\n"
+    )
+    summary = colab.summarize_cli_error(rich_out)
+    assert summary.startswith("ColabRequestError: Failed to issue request POST")
+    assert "Service Unavailable" in summary
+    assert "╰" not in summary and "│" not in summary
+
+    py_tb = (
+        "Traceback (most recent call last):\n"
+        "  File \"cli.py\", line 10, in main\n"
+        "    run()\n"
+        "RuntimeError: backend rejected accelerator\n"
+    )
+    assert colab.summarize_cli_error(py_tb) == "RuntimeError: backend rejected accelerator"
+    assert colab.summarize_cli_error("service unavailable") == "service unavailable"
+
+
+@colab_runtime
+def test_colab_auto_fallback_error_summarizes_all_candidates_without_box_chars(tmp_path, monkeypatch):
+    engine = load_config(data_dir=tmp_path / "engine", cwd=tmp_path, environ={})
+    settings = Settings(engine_config=engine)
+    fake = FakeColab(settings)
+    fake.rows.clear()
+    app = App(settings=settings, colab=fake, tunnel=Tunnel(fake))
+    name = "yh3-auto-fail"
+
+    def fail_stream(args, task, timeout):
+        gpu = args[args.index("--gpu") + 1]
+        if gpu == "G4":
+            return 1, "backend rejected accelerator"
+        rich_503 = (
+            "╭───── Traceback ─────╮\n"
+            "│ 241 │ response=None │\n"
+            "╰─────────────────────╯\n"
+            f"ColabRequestError: POST assign?accelerator={gpu}: Service Unavailable\n"
+        )
+        return 1, rich_503
+
+    monkeypatch.setattr(fake, "stream", fail_stream)
+    plan = app.gpu_plan(session=name, gpu="AUTO")
+    task = app.gpu_up(session=name, gpu="AUTO", approve_digest=plan["digest"], connect=False)
+    for _ in range(200):
+        if task.finished:
+            break
+        time.sleep(0.01)
+    assert task.status == "error"
+    assert "colab new 失败" in task.error
+    assert "G4[out_of_stock]" in task.error
+    assert "H100[service_unavailable]" in task.error
+    assert "A100[service_unavailable]" in task.error
+    assert "ColabRequestError:" in task.error
+    assert "╰" not in task.error and "│" not in task.error
+    assert not settings.get("managed_sessions")

@@ -99,7 +99,14 @@ def test_redaction_collects_credentials_without_host_auth_settings(config_tree):
     assert cfg.redact({
         "detail": f"job-1 true {chenyu_key} {runninghub_key} synthetic-monitoring-token",
         "accessToken": "other-credential",
-    }) == {"detail": "job-1 true [REDACTED] [REDACTED] [REDACTED]", "accessToken": "[REDACTED]"}
+        "credential_status": {"runninghub": "configured", "chenyu": "missing_api_key", "leaked": chenyu_key},
+        "RUNNINGHUB_API_KEY": "configured",
+    }) == {
+        "detail": "job-1 true [REDACTED] [REDACTED] [REDACTED]",
+        "accessToken": "[REDACTED]",
+        "credential_status": {"runninghub": "configured", "chenyu": "missing_api_key", "leaked": "[REDACTED]"},
+        "RUNNINGHUB_API_KEY": "[REDACTED]",
+    }
 
 
 def test_known_api_keys_allow_short_credentials_but_skip_switch_literals(config_tree):

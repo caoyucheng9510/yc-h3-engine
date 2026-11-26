@@ -386,8 +386,10 @@ def _doctor(args, config):
         "ffmpeg": ffmpeg, "ffprobe": ffprobe, "env_files": list(map(str, config.env_files)),
         "env_priority": "显式 .env > 当前目录 .env > 全局 .env > 进程环境",
         "provider_order": list(effective_order),
-        "credential_status": {key: validate_api_key(config.get(key))[1] or "configured"
-                              for key in ("RUNNINGHUB_API_KEY", "CHENYU_API_KEY")},
+        "credential_status": {
+            "runninghub": validate_api_key(config.get("RUNNINGHUB_API_KEY"))[1] or "configured",
+            "chenyu": validate_api_key(config.get("CHENYU_API_KEY"))[1] or "configured",
+        },
         "data_dir": str(config.data_dir), "colab": colab, "providers": probes,
     }
     if not ffmpeg or not ffprobe:

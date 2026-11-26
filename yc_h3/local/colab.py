@@ -26,10 +26,54 @@ from .platform_guard import require_colab_platform
 
 LINE_RE = re.compile(r"^\[(?P<name>[^\]]+)\]\s+(?P<host>\S+)\s*\|(?P<rest>.*)$")
 ANSI_RE = re.compile(r"\x1b\[[0-9;?]*[A-Za-z]")
+_RICH_BOX_END_RE = re.compile(r"^\s*╰[─━═]+╯\s*$")
+_BOX_BORDER_LINE_RE = re.compile(r"^\s*[╭╮╰╯┌┐└┘├┤┬┴┼─━═│┃\s]+$")
+_EXC_LINE_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_.]*(?:Error|Exception|Warning)\b")
 
 
 def strip_ansi(s: Optional[str]) -> str:
     return ANSI_RE.sub("", s or "")
+
+
+def summarize_cli_error(text: Optional[str], limit: int = 300) -> str:
+    """Extract a readable summary from CLI output, stripping Rich/Python traceback frames."""
+    cleaned = strip_ansi(text).strip()
+    if not cleaned:
+        return ""
+    lines = [line.rstrip() for line in cleaned.splitlines()]
+
+    # Rich tracebacks place the actual exception right after the final bottom border.
+    rich_end = -1
+    for idx, line in enumerate(lines):
+        if _RICH_BOX_END_RE.match(line):
+            rich_end = idx
+    if rich_end != -1:
+        tail = [line.strip() for line in lines[rich_end + 1:] if line.strip()]
+        if tail:
+            summary = " ".join(tail)
+            return summary if len(summary) <= limit else summary[: limit - 3] + "..."
+
+    # Standard Python traceback: take the final exception block if present.
+    if any(line.strip() == "Traceback (most recent call last):" for line in lines):
+        exc_start = -1
+        for idx in range(len(lines) - 1, -1, -1):
+            stripped = lines[idx].strip()
+            if stripped and not lines[idx].startswith((" ", "\t")) and _EXC_LINE_RE.match(stripped):
+                exc_start = idx
+                break
+        if exc_start != -1:
+            tail = [line.strip() for line in lines[exc_start:] if line.strip()]
+            summary = " ".join(tail)
+            return summary if len(summary) <= limit else summary[: limit - 3] + "..."
+
+    # Fallback: drop pure box-drawing lines and keep the meaningful tail.
+    meaningful = [
+        line.strip()
+        for line in lines
+        if line.strip() and not _BOX_BORDER_LINE_RE.match(line) and not (line.lstrip().startswith("│") and line.rstrip().endswith("│"))
+    ]
+    joined = "\n".join(meaningful) if meaningful else cleaned
+    return joined if len(joined) <= limit else joined[-limit:]
 
 
 def parse_session_lines(text: str) -> List[dict]:
@@ -155,7 +199,7 @@ class Colab:
         if rc2 == 0:
             sessions = parse_session_lines(out2)
         elif cli_ok:
-            error = self.settings.engine_config.redact("colab sessions 失败: " + out2.strip()[-400:])
+            error = self.settings.engine_config.redact("colab sessions 失败: " + summarize_cli_error(out2))
         if sessions is None:
             sessions = parse_session_lines(out)
         for s in sessions:
@@ -185,7 +229,7 @@ class Colab:
             values[key] = float(match.group(1).replace(",", "")) if match else None
         values["cli_ok"] = rc == 0 and values["balance"] is not None
         if not values["cli_ok"]:
-            values["error"] = "colab usage 失败: " + out.strip()[-400:]
+            values["error"] = "colab usage 失败: " + summarize_cli_error(out)
         elif values["rate"] is None:
             values["error"] = "colab usage 缺少 rate 字段"
         else:
@@ -227,7 +271,7 @@ class Colab:
         if "not found" in out.lower():
             return None
         if rc != 0:
-            raise RuntimeError(out.strip()[-400:] or "colab status 失败")
+            raise RuntimeError(summarize_cli_error(out) or "colab status 失败")
         return None
 
     def session_exists_fresh(self, name):
@@ -251,7 +295,7 @@ class Colab:
             )
         )
         if rc or auth_failed or (not sessions and "no active sessions" not in low):
-            raise RuntimeError(out.strip()[-400:] or "无法确认 colab sessions")
+            raise RuntimeError(summarize_cli_error(out) or "无法确认 colab sessions")
         return sessions
 
     def stream(self, args, task, timeout=900):

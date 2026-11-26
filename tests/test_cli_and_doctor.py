@@ -52,6 +52,7 @@ def test_doctor_and_workflows_are_read_only(tmp_path, monkeypatch, capsys):
     monkeypatch.chdir(tmp_path)
     make_config(tmp_path, monkeypatch)
     (tmp_path / ".env").write_text('RUNNINGHUB_API_KEY="offline-no-workflow"\n')
+    monkeypatch.delenv("CHENYU_API_KEY", raising=False)
     monkeypatch.delenv("RUNNINGHUB_WORKFLOW_ID", raising=False)
     monkeypatch.delenv("RUNNINGHUB_WORKFLOW_ID_HYBRID", raising=False)
     monkeypatch.delenv("RUNNINGHUB_WORKFLOW_ID_COMBAT", raising=False)
@@ -60,8 +61,11 @@ def test_doctor_and_workflows_are_read_only(tmp_path, monkeypatch, capsys):
     monkeypatch.setattr("yc_h3.providers.comfy_client.LocalDaemonClient.health", lambda self: (_ for _ in ()).throw(ConnectionRefusedError()))
     prefix = ["--data-dir", str(tmp_path / "absent")]
     assert cli.main([*prefix, "doctor", "--json"]) == 0
-    result = json.loads(capsys.readouterr().out)
+    raw_doctor = capsys.readouterr().out
+    assert "offline-no-workflow" not in raw_doctor
+    result = json.loads(raw_doctor)
     assert result["env_files"] == [str(tmp_path / ".env")]
+    assert result["credential_status"] == {"runninghub": "configured", "chenyu": "missing_api_key"}
     assert {row["reason"] for row in result["runninghub_workflows"]} == {"missing_workflow_id"}
     assert cli.main([*prefix, "doctor", "--provider", "runninghub", "--json"]) == 3
     result = json.loads(capsys.readouterr().out)

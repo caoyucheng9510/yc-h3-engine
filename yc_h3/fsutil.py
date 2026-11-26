@@ -209,7 +209,7 @@ _SECRET_KEY = re.compile(
 )
 _NON_SECRET_SUFFIXES = (
     "_fp", "_fingerprint", "_sha256", "_hash", "_digest", "_file", "_path", "_dir",
-    "_sock", "_socket", "_mode", "_type", "_enabled", "_disabled", "_url", "_uri",
+    "_sock", "_socket", "_mode", "_type", "_status", "_enabled", "_disabled", "_url", "_uri",
     "_host", "_port", "_timeout", "_count",
 )
 
